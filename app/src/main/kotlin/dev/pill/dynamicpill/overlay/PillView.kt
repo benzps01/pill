@@ -29,14 +29,16 @@ class PillView(context: Context) : View(context) {
     companion object {
         const val IDLE_WIDTH_DP = 130f
         const val IDLE_HEIGHT_DP = 40f
-        const val EXPANDED_WIDTH_DP = 380f
-        const val EXPANDED_HEIGHT_DP = 120f
+        const val EXPANDED_WIDTH_DP = 300f
+        const val EXPANDED_HEIGHT_DP = 90f
+        private const val EXPANDED_CORNER_RADIUS_DP = 28f
     }
 
     private val idleWidthPx = dp(IDLE_WIDTH_DP)
     private val idleHeightPx = dp(IDLE_HEIGHT_DP)
     private val expandedWidthPx = dp(EXPANDED_WIDTH_DP)
     private val expandedHeightPx = dp(EXPANDED_HEIGHT_DP)
+    private val expandedCornerRadiusPx = dp(EXPANDED_CORNER_RADIUS_DP)
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -67,15 +69,15 @@ class PillView(context: Context) : View(context) {
 
     private val progressSpring = SpringAnimation(this, progressProperty).apply {
         spring = SpringForce(0f).apply {
-            dampingRatio = 0.65f
-            stiffness = 180f
+            dampingRatio = 0.7f
+            stiffness = 90f
         }
     }
 
     private val presenceSpring = SpringAnimation(this, presenceProperty).apply {
         spring = SpringForce(1f).apply {
-            dampingRatio = 0.65f
-            stiffness = 180f
+            dampingRatio = 0.7f
+            stiffness = 90f
         }
     }
 
@@ -120,7 +122,11 @@ class PillView(context: Context) : View(context) {
         val top = (height - h) / 2f
         rect.set(left, top, left + w, top + h)
         paint.alpha = (255 * presence).toInt().coerceIn(0, 255)
-        canvas.drawRoundRect(rect, h / 2f, h / 2f, paint)
+        // Idle is a full capsule (radius = half height); Expanded is a flatter
+        // rounded-rect look, not a stadium shape.
+        val idleRadius = idleHeightPx / 2f
+        val cornerRadius = idleRadius + (expandedCornerRadiusPx - idleRadius) * progress
+        canvas.drawRoundRect(rect, cornerRadius, cornerRadius, paint)
 
         val textAlpha = (progress * presence * 255).toInt().coerceIn(0, 255)
         if (textAlpha > 0) {
