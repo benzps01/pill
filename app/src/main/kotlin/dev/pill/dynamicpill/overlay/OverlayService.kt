@@ -17,19 +17,21 @@ import android.view.WindowManager
 import dev.pill.dynamicpill.R
 
 /**
- * Hosts the pill as a WindowManager overlay. The window is sized to the pill's
- * max-expanded bounds and never resized (CLAUDE.md rule 4) — PillView animates its
- * drawn shape and touchable region internally instead.
+ * Hosts the pill as two WindowManager overlays: a render-only window fixed forever at
+ * max-expanded bounds (PillView), and a small invisible hit-target window that tracks
+ * the current state (PillTouchView). See PillTouchView's class doc for why touch
+ * pass-through needs a second window rather than resizing the render window itself.
  */
 class OverlayService : Service() {
 
     private lateinit var windowManager: WindowManager
-    private var pillView: PillView? = null
+    private var renderView: PillView? = null
+    private var touchView: PillTouchView? = null
 
     private val screenStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == Intent.ACTION_SCREEN_OFF) {
-                pillView?.freezeAnimations()
+                renderView?.freezeAnimations()
             }
         }
     }
@@ -43,7 +45,7 @@ class OverlayService : Service() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         startForeground(NOTIFICATION_ID, buildNotification())
-        addPillView()
+        addPillViews()
         registerReceiver(
             screenStateReceiver,
             IntentFilter(Intent.ACTION_SCREEN_OFF),
@@ -58,30 +60,61 @@ class OverlayService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         unregisterReceiver(screenStateReceiver)
-        pillView?.let { windowManager.removeView(it) }
-        pillView = null
+        renderView?.let { windowManager.removeView(it) }
+        touchView?.let { windowManager.removeView(it) }
+        renderView = null
+        touchView = null
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun addPillView() {
-        if (pillView != null) return
+    private fun addPillViews() {
+        if (renderView != null) return
 
-        val view = PillView(this)
+        val idleWidthPx = dp(PillView.IDLE_WIDTH_DP).toInt()
+        val idleHeightPx = dp(PillView.IDLE_HEIGHT_DP).toInt()
+        val expandedWidthPx = dp(PillView.EXPANDED_WIDTH_DP).toInt()
+        val expandedHeightPx = dp(PillView.EXPANDED_HEIGHT_DP).toInt()
+        val topOffsetPx = dp(12f).toInt()
 
-        val layoutParams = WindowManager.LayoutParams(
-            dp(PillView.EXPANDED_WIDTH_DP).toInt(),
-            dp(PillView.EXPANDED_HEIGHT_DP).toInt(),
+        val render = PillView(this)
+        val renderParams = WindowManager.LayoutParams(
+            expandedWidthPx,
+            expandedHeightPx,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            y = topOffsetPx
+        }
+        windowManager.addView(render, renderParams)
+        renderView = render
+
+        val touchParams = WindowManager.LayoutParams(
+            idleWidthPx,
+            idleHeightPx,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            y = dp(12f).toInt()
+            // Centered on the same midline the renderer draws around (see PillTouchView).
+            y = topOffsetPx + (expandedHeightPx - idleHeightPx) / 2
         }
-
-        windowManager.addView(view, layoutParams)
-        pillView = view
+        val touch = PillTouchView(
+            this,
+            windowManager,
+            touchParams,
+            idleWidthPx,
+            idleHeightPx,
+            expandedWidthPx,
+            expandedHeightPx,
+            topOffsetPx
+        ) { state, animate -> render.applyState(state, animate) }
+        windowManager.addView(touch, touchParams)
+        touchView = touch
     }
 
     private fun dp(value: Float): Float =
