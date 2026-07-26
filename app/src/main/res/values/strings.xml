@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Dynamic Pill</string>
+    <string name="overlay_channel_name">Pill overlay</string>
+    <string name="overlay_notification_title">Dynamic Pill running</string>
+    <string name="grant_overlay_permission">Grant overlay permission</string>
+    <string name="start_overlay">Start pill</string>
+    <string name="stop_overlay">Stop pill</string>
+</resources>
