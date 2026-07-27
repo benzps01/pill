@@ -82,11 +82,9 @@ class PillTouchView(
             val height = if (expanded) expandedHeightPx else idleHeightPx
             layoutParams.width = if (expanded) expandedWidthPx else idleWidthPx
             layoutParams.height = height
-            // The renderer always draws centered inside its fixed max-height canvas, so
-            // this window's vertical center must match that canvas's center too —
-            // otherwise a shorter (Idle) hit-target top-aligned at the same y sits
-            // above where the pill is actually drawn.
-            layoutParams.y = topOffsetPx + (expandedHeightPx - height) / 2
+            // The renderer anchors content to its own top and grows downward
+            // (see PillView.onDraw), so this window stays top-aligned too.
+            layoutParams.y = topOffsetPx
             windowManager.updateViewLayout(this, layoutParams)
         }
     }

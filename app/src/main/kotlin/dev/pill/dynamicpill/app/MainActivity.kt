@@ -1,8 +1,6 @@
 package dev.pill.dynamicpill.app
 
 import android.content.Intent
-import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
@@ -27,7 +25,7 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import dev.pill.dynamicpill.overlay.OverlayService
+import dev.pill.dynamicpill.overlay.PillAccessibilityService
 
 class MainActivity : ComponentActivity() {
 
@@ -37,41 +35,40 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     MainScreen(
-                        hasOverlayPermission = { hasOverlayPermission() },
-                        onRequestPermission = { requestOverlayPermission() },
-                        onStart = { startService(Intent(this, OverlayService::class.java)) },
-                        onStop = { stopService(Intent(this, OverlayService::class.java)) }
+                        isServiceEnabled = { isAccessibilityServiceEnabled() },
+                        onOpenSettings = { openAccessibilitySettings() }
                     )
                 }
             }
         }
     }
 
-    private fun hasOverlayPermission(): Boolean = Settings.canDrawOverlays(this)
+    private fun isAccessibilityServiceEnabled(): Boolean {
+        val expectedComponent = "$packageName/${PillAccessibilityService::class.java.name}"
+        val enabledServices = Settings.Secure.getString(
+            contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+        return enabledServices.split(':').any { it.equals(expectedComponent, ignoreCase = true) }
+    }
 
-    private fun requestOverlayPermission() {
-        val intent = Intent(
-            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-            Uri.parse("package:$packageName")
-        )
-        startActivity(intent)
+    private fun openAccessibilitySettings() {
+        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
     }
 }
 
 @Composable
 private fun MainScreen(
-    hasOverlayPermission: () -> Boolean,
-    onRequestPermission: () -> Unit,
-    onStart: () -> Unit,
-    onStop: () -> Unit
+    isServiceEnabled: () -> Boolean,
+    onOpenSettings: () -> Unit
 ) {
-    var granted by remember { mutableStateOf(hasOverlayPermission()) }
+    var enabled by remember { mutableStateOf(isServiceEnabled()) }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                granted = hasOverlayPermission()
+                enabled = isServiceEnabled()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -82,18 +79,18 @@ private fun MainScreen(
         modifier = Modifier.fillMaxSize().padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically)
     ) {
-        Text(if (granted) "Overlay permission granted" else "Overlay permission needed")
-
-        if (!granted) {
-            Button(onClick = {
-                onRequestPermission()
-                granted = hasOverlayPermission()
-            }) {
-                Text("Grant overlay permission")
+        Text(
+            if (enabled) {
+                "Accessibility service enabled — pill is running"
+            } else {
+                "Accessibility service needed to draw the pill"
             }
-        } else {
-            Button(onClick = onStart) { Text("Start pill") }
-            Button(onClick = onStop) { Text("Stop pill") }
+        )
+
+        if (!enabled) {
+            Button(onClick = onOpenSettings) {
+                Text("Open Accessibility settings")
+            }
         }
     }
 }

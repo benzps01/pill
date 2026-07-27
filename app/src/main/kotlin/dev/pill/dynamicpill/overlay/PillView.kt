@@ -14,7 +14,7 @@ import dev.pill.dynamicpill.core.state.PillState
 
 /**
  * Pure renderer. Its window is sized to the max-expanded bounds once, in
- * OverlayService, and never resized again (CLAUDE.md rule 4) — the window is also
+ * PillAccessibilityService, and never resized again (CLAUDE.md rule 4) — the window is also
  * FLAG_NOT_TOUCHABLE, so it can stay fixed forever without ever blocking a tap
  * (touch handling lives in the separate, small PillTouchView instead; see that
  * class's doc for why touch pass-through needs a second window).
@@ -30,8 +30,12 @@ class PillView(context: Context) : View(context) {
         const val IDLE_WIDTH_DP = 130f
         const val IDLE_HEIGHT_DP = 40f
         const val EXPANDED_WIDTH_DP = 300f
-        const val EXPANDED_HEIGHT_DP = 90f
+        const val EXPANDED_HEIGHT_DP = 130f
         private const val EXPANDED_CORNER_RADIUS_DP = 28f
+        // Collapsed (presence=0) width — smaller than idle height, so the
+        // resting circle over the cutout reads as a small dot, not a disc as
+        // wide as the pill is tall.
+        private const val CIRCLE_WIDTH_DP = 20f
     }
 
     private val idleWidthPx = dp(IDLE_WIDTH_DP)
@@ -39,6 +43,7 @@ class PillView(context: Context) : View(context) {
     private val expandedWidthPx = dp(EXPANDED_WIDTH_DP)
     private val expandedHeightPx = dp(EXPANDED_HEIGHT_DP)
     private val expandedCornerRadiusPx = dp(EXPANDED_CORNER_RADIUS_DP)
+    private val circleWidthPx = dp(CIRCLE_WIDTH_DP)
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -69,16 +74,23 @@ class PillView(context: Context) : View(context) {
 
     private val progressSpring = SpringAnimation(this, progressProperty).apply {
         spring = SpringForce(0f).apply {
-            dampingRatio = 0.7f
-            stiffness = 90f
+            // Critically damped: settles exactly at the target size with no
+            // overshoot (unlike presenceSpring, this transition shouldn't wobble).
+            dampingRatio = 1f
+            stiffness = 25f
         }
+        // progress is a normalized 0..1 value, not pixels — without this the
+        // default rest threshold (1f) is the whole animation range, so the
+        // spring self-cancels on the first frame regardless of stiffness.
+        setMinimumVisibleChange(1f / 500f)
     }
 
     private val presenceSpring = SpringAnimation(this, presenceProperty).apply {
         spring = SpringForce(1f).apply {
-            dampingRatio = 0.7f
-            stiffness = 90f
+            dampingRatio = 0.8f
+            stiffness = 12f
         }
+        setMinimumVisibleChange(1f / 500f)
     }
 
     init {
@@ -114,24 +126,39 @@ class PillView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val w = (idleWidthPx + (expandedWidthPx - idleWidthPx) * progress) * presence
-        val h = (idleHeightPx + (expandedHeightPx - idleHeightPx) * progress) * presence
+        // At presence=0 the pill collapses to a small circle over the cutout
+        // (width == height == circleWidthPx) instead of shrinking to nothing;
+        // `presence` grows it from that circle out to the full pill shape.
+        // This is a small, bounded move (circleWidthPx -> full height), not
+        // the old "grow from nothing" — width shrinks the same amount so it
+        // stays round, not an oval, at rest.
+        val fullHeight = idleHeightPx + (expandedHeightPx - idleHeightPx) * progress
+        val fullWidth = idleWidthPx + (expandedWidthPx - idleWidthPx) * progress
+        val h = circleWidthPx + (fullHeight - circleWidthPx) * presence
+        val w = circleWidthPx + (fullWidth - circleWidthPx) * presence
         if (w < 1f || h < 1f) return
 
         val left = (width - w) / 2f
-        val top = (height - h) / 2f
+        // Anchored to the canvas top, not centered — the pill only grows
+        // downward from the cutout, matching Dynamic Island behavior.
+        val top = 0f
         rect.set(left, top, left + w, top + h)
-        paint.alpha = (255 * presence).toInt().coerceIn(0, 255)
+        // Presence no longer drives visibility — the collapsed circle stays
+        // fully opaque. True full-invisibility (fullscreen app/screen off,
+        // the real build-plan HIDDEN state) is a separate, not-yet-built
+        // concept — see the note on PillState.HIDDEN.
+        paint.alpha = 255
         // Idle is a full capsule (radius = half height); Expanded is a flatter
-        // rounded-rect look, not a stadium shape.
+        // rounded-rect look, not a stadium shape. At progress=0 this equals
+        // h/2, which combined with w==h at presence=0 draws a perfect circle.
         val idleRadius = idleHeightPx / 2f
         val cornerRadius = idleRadius + (expandedCornerRadiusPx - idleRadius) * progress
         canvas.drawRoundRect(rect, cornerRadius, cornerRadius, paint)
 
-        val textAlpha = (progress * presence * 255).toInt().coerceIn(0, 255)
+        val textAlpha = (progress * 255).toInt().coerceIn(0, 255)
         if (textAlpha > 0) {
             textPaint.alpha = textAlpha
-            val textY = height / 2f - (textPaint.descent() + textPaint.ascent()) / 2f
+            val textY = top + h / 2f - (textPaint.descent() + textPaint.ascent()) / 2f
             canvas.drawText("Expanded", width / 2f, textY, textPaint)
         }
     }
