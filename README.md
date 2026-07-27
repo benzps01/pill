@@ -91,6 +91,3 @@ Then **Phase 4** (the three v1 providers — Calls via `CallStyle` detection,
 Google Messages only, Spotify), **Phase 5** (Compose settings + DataStore
 config), **Phase 6** (polish, per the build plan's performance bar: 120Hz,
 zero dropped frames, clean mid-animation retargeting).
-
-Per CLAUDE.md's phase-gate discipline: don't start Phase 3 until Phase 1 and
-2's Verify checklists are actually confirmed on-device, not assumed.
