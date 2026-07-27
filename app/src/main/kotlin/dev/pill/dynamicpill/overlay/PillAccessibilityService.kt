@@ -27,7 +27,7 @@ import dev.pill.dynamicpill.core.device.Pixel8ProProfile
 class PillAccessibilityService : AccessibilityService() {
 
     private companion object {
-        private const val NUDGE_DOWN_DP = 6f
+        private const val NUDGE_DOWN_DP = 9.7f
     }
 
     private lateinit var windowManager: WindowManager

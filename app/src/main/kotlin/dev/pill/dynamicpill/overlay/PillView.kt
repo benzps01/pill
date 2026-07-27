@@ -28,14 +28,14 @@ class PillView(context: Context) : View(context) {
 
     companion object {
         const val IDLE_WIDTH_DP = 130f
-        const val IDLE_HEIGHT_DP = 40f
+        const val IDLE_HEIGHT_DP = 30f
         const val EXPANDED_WIDTH_DP = 300f
         const val EXPANDED_HEIGHT_DP = 130f
         private const val EXPANDED_CORNER_RADIUS_DP = 28f
         // Collapsed (presence=0) width — smaller than idle height, so the
         // resting circle over the cutout reads as a small dot, not a disc as
         // wide as the pill is tall.
-        private const val CIRCLE_WIDTH_DP = 20f
+        private const val CIRCLE_WIDTH_DP = 30f
     }
 
     private val idleWidthPx = dp(IDLE_WIDTH_DP)
@@ -139,9 +139,13 @@ class PillView(context: Context) : View(context) {
         if (w < 1f || h < 1f) return
 
         val left = (width - w) / 2f
-        // Anchored to the canvas top, not centered — the pill only grows
-        // downward from the cutout, matching Dynamic Island behavior.
-        val top = 0f
+        // Top=0 only at presence=1 (PS/ES), so those still grow strictly
+        // downward from the cutout. Below that, top shifts down just enough
+        // to keep the shape's vertical center fixed at fullHeight/2 as it
+        // shrinks toward the circle, so CS stays concentric with the camera
+        // instead of sharing PS's top edge (which makes a shorter CS sit
+        // higher than PS).
+        val top = (fullHeight - circleWidthPx) / 2f * (1f - presence)
         rect.set(left, top, left + w, top + h)
         // Presence no longer drives visibility — the collapsed circle stays
         // fully opaque. True full-invisibility (fullscreen app/screen off,
