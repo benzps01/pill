@@ -2,4 +2,7 @@
 <resources>
     <string name="app_name">Dynamic Pill</string>
     <string name="accessibility_service_description">Draws the pill overlay above the status bar and camera cutout.</string>
+    <string name="notification_access_channel_name">Notification access alerts</string>
+    <string name="notification_access_revoked_title">Dynamic Pill needs Notification access</string>
+    <string name="notification_access_revoked_body">Notification access was turned off (often after a system update). Tap to re-enable it.</string>
 </resources>

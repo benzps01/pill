@@ -55,6 +55,8 @@ class PillView(context: Context) : View(context) {
 
     private var progress = 0f
     private var presence = 1f
+    private var contentTitle: String? = "Expanded"
+    private var contentSubtitle: String? = null
 
     private val progressProperty = object : FloatPropertyCompat<PillView>("pillProgress") {
         override fun getValue(view: PillView) = view.progress
@@ -88,7 +90,7 @@ class PillView(context: Context) : View(context) {
     private val presenceSpring = SpringAnimation(this, presenceProperty).apply {
         spring = SpringForce(1f).apply {
             dampingRatio = 0.8f
-            stiffness = 12f
+            stiffness = 26.2f
         }
         setMinimumVisibleChange(1f / 500f)
     }
@@ -112,6 +114,13 @@ class PillView(context: Context) : View(context) {
             presence = targetPresence
             invalidate()
         }
+    }
+
+    /** Plain-text placeholder content until real Expanded-state UI (art, transport) exists. */
+    fun setContent(title: String?, subtitle: String?) {
+        contentTitle = title
+        contentSubtitle = subtitle
+        invalidate()
     }
 
     /** Cancels in-flight springs without changing state — called on ACTION_SCREEN_OFF. */
@@ -141,11 +150,17 @@ class PillView(context: Context) : View(context) {
         val left = (width - w) / 2f
         // Top=0 only at presence=1 (PS/ES), so those still grow strictly
         // downward from the cutout. Below that, top shifts down just enough
-        // to keep the shape's vertical center fixed at fullHeight/2 as it
+        // to keep the shape's vertical center fixed at idleHeightPx/2 as it
         // shrinks toward the circle, so CS stays concentric with the camera
         // instead of sharing PS's top edge (which makes a shorter CS sit
-        // higher than PS).
-        val top = (fullHeight - circleWidthPx) / 2f * (1f - presence)
+        // higher than PS). Deliberately anchored to idleHeightPx, not the
+        // live fullHeight — fullHeight tracks the progress spring (PS<->ES),
+        // and during ES->CS (swipe up) both springs move at once, so using
+        // fullHeight here made the circle dip down while progress was still
+        // settling from 1->0, then correct back up. CS/PS transitions only
+        // happen at progress=0 anyway, so idleHeightPx is the right anchor
+        // and has zero dependency on the progress spring.
+        val top = (idleHeightPx - circleWidthPx) / 2f * (1f - presence)
         rect.set(left, top, left + w, top + h)
         // Presence no longer drives visibility — the collapsed circle stays
         // fully opaque. True full-invisibility (fullscreen app/screen off,
@@ -160,10 +175,18 @@ class PillView(context: Context) : View(context) {
         canvas.drawRoundRect(rect, cornerRadius, cornerRadius, paint)
 
         val textAlpha = (progress * 255).toInt().coerceIn(0, 255)
-        if (textAlpha > 0) {
+        val title = contentTitle
+        if (textAlpha > 0 && title != null) {
             textPaint.alpha = textAlpha
-            val textY = top + h / 2f - (textPaint.descent() + textPaint.ascent()) / 2f
-            canvas.drawText("Expanded", width / 2f, textY, textPaint)
+            val subtitle = contentSubtitle
+            if (subtitle != null) {
+                canvas.drawText(title, width / 2f, top + h / 2f - dp(2f), textPaint)
+                val subtitlePaint = Paint(textPaint).apply { textSize = dp(12f) }
+                canvas.drawText(subtitle, width / 2f, top + h / 2f + dp(16f), subtitlePaint)
+            } else {
+                val textY = top + h / 2f - (textPaint.descent() + textPaint.ascent()) / 2f
+                canvas.drawText(title, width / 2f, textY, textPaint)
+            }
         }
     }
 

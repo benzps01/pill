@@ -25,6 +25,7 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import dev.pill.dynamicpill.data.NotificationAccess
 import dev.pill.dynamicpill.overlay.PillAccessibilityService
 
 class MainActivity : ComponentActivity() {
@@ -35,8 +36,10 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     MainScreen(
-                        isServiceEnabled = { isAccessibilityServiceEnabled() },
-                        onOpenSettings = { openAccessibilitySettings() }
+                        isAccessibilityEnabled = { isAccessibilityServiceEnabled() },
+                        onOpenAccessibilitySettings = { openAccessibilitySettings() },
+                        isNotificationAccessEnabled = { NotificationAccess.isGranted(this) },
+                        onOpenNotificationAccessSettings = { openNotificationAccessSettings() }
                     )
                 }
             }
@@ -55,20 +58,28 @@ class MainActivity : ComponentActivity() {
     private fun openAccessibilitySettings() {
         startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
     }
+
+    private fun openNotificationAccessSettings() {
+        startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+    }
 }
 
 @Composable
 private fun MainScreen(
-    isServiceEnabled: () -> Boolean,
-    onOpenSettings: () -> Unit
+    isAccessibilityEnabled: () -> Boolean,
+    onOpenAccessibilitySettings: () -> Unit,
+    isNotificationAccessEnabled: () -> Boolean,
+    onOpenNotificationAccessSettings: () -> Unit
 ) {
-    var enabled by remember { mutableStateOf(isServiceEnabled()) }
+    var accessibilityEnabled by remember { mutableStateOf(isAccessibilityEnabled()) }
+    var notificationAccessEnabled by remember { mutableStateOf(isNotificationAccessEnabled()) }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                enabled = isServiceEnabled()
+                accessibilityEnabled = isAccessibilityEnabled()
+                notificationAccessEnabled = isNotificationAccessEnabled()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -80,16 +91,28 @@ private fun MainScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically)
     ) {
         Text(
-            if (enabled) {
+            if (accessibilityEnabled) {
                 "Accessibility service enabled — pill is running"
             } else {
                 "Accessibility service needed to draw the pill"
             }
         )
-
-        if (!enabled) {
-            Button(onClick = onOpenSettings) {
+        if (!accessibilityEnabled) {
+            Button(onClick = onOpenAccessibilitySettings) {
                 Text("Open Accessibility settings")
+            }
+        }
+
+        Text(
+            if (notificationAccessEnabled) {
+                "Notification access enabled"
+            } else {
+                "Notification access needed for calls/messages"
+            }
+        )
+        if (!notificationAccessEnabled) {
+            Button(onClick = onOpenNotificationAccessSettings) {
+                Text("Open Notification access settings")
             }
         }
     }

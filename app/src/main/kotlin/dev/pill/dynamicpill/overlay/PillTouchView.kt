@@ -6,9 +6,6 @@ import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
-import dev.pill.dynamicpill.core.state.PillState
-import dev.pill.dynamicpill.core.state.PillStateMachine
-
 /**
  * Invisible hit-target window, kept separate from PillView (the renderer) so the
  * renderer's window can stay genuinely fixed at max-expanded bounds forever
@@ -17,6 +14,10 @@ import dev.pill.dynamicpill.core.state.PillStateMachine
  * the only way to get exact touch pass-through (rule 6) without the hidden
  * `ViewTreeObserver.addOnComputeInternalInsetsListener` / `InternalInsetsInfo` API,
  * which isn't present in the public SDK stub.
+ *
+ * Owns no state machine — just reports gestures upward. The single owner is
+ * PillAccessibilityService, since Phase 3 event-driven transitions (Arbiter
+ * winner changes) need to drive the same state as touch, not a separate copy.
  */
 class PillTouchView(
     context: Context,
@@ -27,10 +28,10 @@ class PillTouchView(
     private val expandedWidthPx: Int,
     private val expandedHeightPx: Int,
     private val topOffsetPx: Int,
-    private val onStateChanged: (PillState, Boolean) -> Unit
+    private val onTap: () -> Unit,
+    private val onSwipeUp: () -> Unit
 ) : View(context) {
 
-    private val stateMachine = PillStateMachine(PillState.IDLE)
     private var windowExpanded = false
 
     private val swipeMinDistancePx = dp(24f)
@@ -40,7 +41,7 @@ class PillTouchView(
         context,
         object : GestureDetector.SimpleOnGestureListener() {
             override fun onSingleTapUp(e: MotionEvent): Boolean {
-                transition(stateMachine.onTap())
+                onTap()
                 return true
             }
 
@@ -53,7 +54,7 @@ class PillTouchView(
                 val start = e1 ?: return false
                 val distance = start.y - e2.y
                 if (distance > swipeMinDistancePx && -velocityY > swipeMinVelocityPx) {
-                    transition(stateMachine.onSwipeUp())
+                    onSwipeUp()
                     return true
                 }
                 return false
@@ -66,12 +67,8 @@ class PillTouchView(
         return true
     }
 
-    private fun transition(state: PillState) {
-        onStateChanged(state, true)
-        resizeWindow(expanded = state == PillState.EXPANDED || state == PillState.TRANSIENT_POP)
-    }
-
-    private fun resizeWindow(expanded: Boolean) {
+    /** Called by PillAccessibilityService after every transition it applies. */
+    fun resizeWindow(expanded: Boolean) {
         if (windowExpanded == expanded) return
         windowExpanded = expanded
         // Deferred: resizing synchronously inside touch-event dispatch corrupts the

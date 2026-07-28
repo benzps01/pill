@@ -2,6 +2,7 @@ package dev.pill.dynamicpill.overlay
 
 import android.accessibilityservice.AccessibilityService
 import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -13,6 +14,14 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import dev.pill.dynamicpill.core.device.DeviceProfile
 import dev.pill.dynamicpill.core.device.Pixel8ProProfile
+import dev.pill.dynamicpill.core.event.Arbiter
+import dev.pill.dynamicpill.core.event.EventProvider
+import dev.pill.dynamicpill.core.model.PillEvent
+import dev.pill.dynamicpill.core.state.PillState
+import dev.pill.dynamicpill.core.state.PillStateMachine
+import dev.pill.dynamicpill.data.NotificationAccess
+import dev.pill.dynamicpill.data.PillNotificationListenerService
+import dev.pill.dynamicpill.providers.spotify.SpotifyProvider
 
 /**
  * Hosts the pill windows as an AccessibilityService rather than a plain
@@ -23,6 +32,10 @@ import dev.pill.dynamicpill.core.device.Pixel8ProProfile
  * windows added by a bound AccessibilityService are trusted and exempt from
  * that restriction, which is what lets the pill sit on the cutout and still
  * be fully tappable (same technique used by dynamicSpot / Dynamic Island Pro).
+ *
+ * Also the single owner of PillStateMachine — both touch gestures (via
+ * PillTouchView's callbacks) and the Arbiter's winner (real events) drive
+ * the same state through one transition() path, so they can't disagree.
  */
 class PillAccessibilityService : AccessibilityService() {
 
@@ -34,6 +47,9 @@ class PillAccessibilityService : AccessibilityService() {
     private var renderView: PillView? = null
     private var touchView: PillTouchView? = null
     private val deviceProfile: DeviceProfile = Pixel8ProProfile
+    private val stateMachine = PillStateMachine(PillState.IDLE)
+    private var arbiter: Arbiter? = null
+    private var spotifyProvider: SpotifyProvider? = null
 
     private val screenStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -52,21 +68,48 @@ class PillAccessibilityService : AccessibilityService() {
             IntentFilter(Intent.ACTION_SCREEN_OFF),
             Context.RECEIVER_NOT_EXPORTED
         )
+        setUpEventEngine()
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // Phase 3 wires real events (notifications/media) through here.
-    }
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
 
     override fun onInterrupt() {}
 
     override fun onUnbind(intent: Intent?): Boolean {
         unregisterReceiver(screenStateReceiver)
+        spotifyProvider?.stop()
         renderView?.let { windowManager.removeView(it) }
         touchView?.let { windowManager.removeView(it) }
         renderView = null
         touchView = null
         return super.onUnbind(intent)
+    }
+
+    /**
+     * Phase 3/4: only wires providers when Notification Access is actually
+     * granted (rule 11 — never assume, never fail silently; MainActivity's
+     * onboarding row is the visible half of this). No providers means the
+     * Arbiter always has nothing to say, which is a safe no-op, not a crash.
+     */
+    private fun setUpEventEngine() {
+        if (!NotificationAccess.isGranted(this)) return
+
+        val notificationListenerComponent =
+            ComponentName(this, PillNotificationListenerService::class.java)
+        val spotify = SpotifyProvider(this, notificationListenerComponent)
+        spotifyProvider = spotify
+
+        val providers: List<EventProvider> = listOf(spotify)
+        val eventArbiter = Arbiter(providers)
+        eventArbiter.setOnWinnerChanged { event -> onWinnerChanged(event) }
+        arbiter = eventArbiter
+
+        spotify.start()
+    }
+
+    private fun onWinnerChanged(event: PillEvent?) {
+        renderView?.setContent(event?.title, event?.subtitle)
+        applyTransition(stateMachine.onEvent(event))
     }
 
     private fun addPillViews() {
@@ -123,10 +166,17 @@ class PillAccessibilityService : AccessibilityService() {
             idleHeightPx,
             expandedWidthPx,
             expandedHeightPx,
-            windowTopPx
-        ) { state, animate -> render.applyState(state, animate) }
+            windowTopPx,
+            onTap = { applyTransition(stateMachine.onTap()) },
+            onSwipeUp = { applyTransition(stateMachine.onSwipeUp()) }
+        )
         windowManager.addView(touch, touchParams)
         touchView = touch
+    }
+
+    private fun applyTransition(state: PillState) {
+        renderView?.applyState(state, animate = true)
+        touchView?.resizeWindow(expanded = state == PillState.EXPANDED || state == PillState.TRANSIENT_POP)
     }
 
     /**
