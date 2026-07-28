@@ -29,18 +29,39 @@ class PillTouchView(
     private val expandedHeightPx: Int,
     private val topOffsetPx: Int,
     private val onTap: () -> Unit,
-    private val onSwipeUp: () -> Unit
+    private val onSwipeUp: () -> Unit,
+    private val hasControls: () -> Boolean = { false },
+    private val onPlayPause: () -> Unit = {},
+    private val onSkipPrevious: () -> Unit = {},
+    private val onSkipNext: () -> Unit = {}
 ) : View(context) {
+
+    private enum class ControlAction { PREV, PLAY_PAUSE, NEXT }
 
     private var windowExpanded = false
 
     private val swipeMinDistancePx = dp(24f)
     private val swipeMinVelocityPx = dp(400f)
 
+    // Same dp constants PillView draws its transport controls with — kept as
+    // one source of truth on PillView so hit-testing can't drift from
+    // drawing.
+    private val controlButtonRadiusPx = dp(PillView.CONTROL_BUTTON_DIAMETER_DP) / 2f
+    private val controlButtonSpacingPx = dp(PillView.CONTROL_BUTTON_SPACING_DP)
+    private val controlButtonBottomMarginPx = dp(PillView.CONTROL_BUTTON_BOTTOM_MARGIN_DP)
+
     private val gestureDetector = GestureDetector(
         context,
         object : GestureDetector.SimpleOnGestureListener() {
             override fun onSingleTapUp(e: MotionEvent): Boolean {
+                if (windowExpanded && hasControls()) {
+                    when (hitTestControl(e.x, e.y)) {
+                        ControlAction.PREV -> { onSkipPrevious(); return true }
+                        ControlAction.PLAY_PAUSE -> { onPlayPause(); return true }
+                        ControlAction.NEXT -> { onSkipNext(); return true }
+                        null -> {}
+                    }
+                }
                 onTap()
                 return true
             }
@@ -84,6 +105,23 @@ class PillTouchView(
             layoutParams.y = topOffsetPx
             windowManager.updateViewLayout(this, layoutParams)
         }
+    }
+
+    private fun hitTestControl(x: Float, y: Float): ControlAction? {
+        val cx = expandedWidthPx / 2f
+        val cy = expandedHeightPx - controlButtonBottomMarginPx - controlButtonRadiusPx
+        val hitRadius = controlButtonRadiusPx * 1.2f // slightly generous over the drawn circle
+        val candidates = listOf(
+            ControlAction.PREV to (cx - controlButtonSpacingPx),
+            ControlAction.PLAY_PAUSE to cx,
+            ControlAction.NEXT to (cx + controlButtonSpacingPx)
+        )
+        for ((action, buttonCx) in candidates) {
+            val dx = x - buttonCx
+            val dy = y - cy
+            if (dx * dx + dy * dy <= hitRadius * hitRadius) return action
+        }
+        return null
     }
 
     private fun dp(value: Float): Float =

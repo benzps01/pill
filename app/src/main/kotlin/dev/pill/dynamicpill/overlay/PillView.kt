@@ -1,6 +1,7 @@
 package dev.pill.dynamicpill.overlay
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -11,6 +12,7 @@ import androidx.dynamicanimation.animation.FloatPropertyCompat
 import androidx.dynamicanimation.animation.SpringAnimation
 import androidx.dynamicanimation.animation.SpringForce
 import dev.pill.dynamicpill.core.state.PillState
+import kotlin.math.sin
 
 /**
  * Pure renderer. Its window is sized to the max-expanded bounds once, in
@@ -23,6 +25,13 @@ import dev.pill.dynamicpill.core.state.PillState
  * (rule 5):
  *  - [progress] 0=idle size, 1=expanded size
  *  - [presence] 0=hidden (invisible), 1=fully shown
+ *
+ * Content (icon/title/subtitle) is set via [setContent] and cross-fades
+ * between two looks purely as a function of [progress] — no separate
+ * Compact/Expanded draw-mode flag is needed: at progress=0 with content
+ * present, the source icon + equalizer bars show (Compact/PS); as progress
+ * rises toward 1, that fades out and album art + title/artist fades in
+ * (Expanded/ES). No content set at all (IDLE) draws nothing.
  */
 class PillView(context: Context) : View(context) {
 
@@ -36,6 +45,24 @@ class PillView(context: Context) : View(context) {
         // resting circle over the cutout reads as a small dot, not a disc as
         // wide as the pill is tall.
         private const val CIRCLE_WIDTH_DP = 30f
+
+        private const val ART_SIZE_DP = 48f
+        private const val CONTENT_PADDING_DP = 20f
+        private const val COMPACT_ICON_SIZE_DP = 18f
+        private const val COMPACT_PADDING_DP = 10f
+        private const val BAR_COUNT = 3
+        private const val BAR_WIDTH_DP = 3f
+        private const val BAR_GAP_DP = 2f
+        private const val BAR_MAX_HEIGHT_DP = 14f
+        private const val MARQUEE_SPEED_DP_PER_SEC = 30f
+        private const val MARQUEE_GAP_DP = 24f
+
+        // Shared with PillTouchView for hit-testing — single source of truth
+        // for the transport-control layout so drawing and tap detection
+        // can't drift apart.
+        const val CONTROL_BUTTON_DIAMETER_DP = 40f
+        const val CONTROL_BUTTON_SPACING_DP = 56f
+        const val CONTROL_BUTTON_BOTTOM_MARGIN_DP = 20f
     }
 
     private val idleWidthPx = dp(IDLE_WIDTH_DP)
@@ -44,19 +71,64 @@ class PillView(context: Context) : View(context) {
     private val expandedHeightPx = dp(EXPANDED_HEIGHT_DP)
     private val expandedCornerRadiusPx = dp(EXPANDED_CORNER_RADIUS_DP)
     private val circleWidthPx = dp(CIRCLE_WIDTH_DP)
+    private val artSizePx = dp(ART_SIZE_DP)
+    private val contentPaddingPx = dp(CONTENT_PADDING_DP)
+    private val compactIconSizePx = dp(COMPACT_ICON_SIZE_DP)
+    private val compactPaddingPx = dp(COMPACT_PADDING_DP)
+    private val barWidthPx = dp(BAR_WIDTH_DP)
+    private val barGapPx = dp(BAR_GAP_DP)
+    private val barMaxHeightPx = dp(BAR_MAX_HEIGHT_DP)
+    private val marqueeSpeedPxPerSec = dp(MARQUEE_SPEED_DP_PER_SEC)
+    private val marqueeGapPx = dp(MARQUEE_GAP_DP)
+    private val controlButtonRadiusPx = dp(CONTROL_BUTTON_DIAMETER_DP) / 2f
+    private val controlButtonSpacingPx = dp(CONTROL_BUTTON_SPACING_DP)
+    private val controlButtonBottomMarginPx = dp(CONTROL_BUTTON_BOTTOM_MARGIN_DP)
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK }
-    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         textSize = dp(14f)
-        textAlign = Paint.Align.CENTER
+        textAlign = Paint.Align.LEFT
     }
+    private val subtitlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        textSize = dp(12f)
+        textAlign = Paint.Align.LEFT
+        alpha = 200
+    }
+    private val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val barPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+    private val buttonBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+    private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+    private val iconPath = android.graphics.Path()
     private val rect = RectF()
+    private val bitmapDst = RectF()
+    private val barRect = RectF()
 
     private var progress = 0f
     private var presence = 1f
-    private var contentTitle: String? = "Expanded"
+    private var contentTitle: String? = null
     private var contentSubtitle: String? = null
+    private var contentIcon: Bitmap? = null
+    private var contentIsPlaying: Boolean = true
+    private var sourceIcon: Bitmap? = null
+
+    // Continuous, screen-on-only visual flourish (equalizer bars / marquee),
+    // not an event source — distinct from the rule-1 "never poll" ban on
+    // polling business state. Self-schedules via postOnAnimation, not a
+    // Handler.postDelayed timer.
+    private var screenOn = true
+    private var animRunning = false
+    private var animStartNanos = 0L
+    private val tick: () -> Unit = {
+        invalidate()
+        if (screenOn && shouldAnimate()) {
+            postOnAnimation(tickRunnable)
+        } else {
+            animRunning = false
+        }
+    }
+    private val tickRunnable = Runnable { tick() }
 
     private val progressProperty = object : FloatPropertyCompat<PillView>("pillProgress") {
         override fun getValue(view: PillView) = view.progress
@@ -114,19 +186,59 @@ class PillView(context: Context) : View(context) {
             presence = targetPresence
             invalidate()
         }
+        startAnimLoopIfNeeded()
     }
 
-    /** Plain-text placeholder content until real Expanded-state UI (art, transport) exists. */
-    fun setContent(title: String?, subtitle: String?) {
-        contentTitle = title
-        contentSubtitle = subtitle
+    /** Source app icon shown in Compact/PS (e.g. Spotify's icon) — set once, rarely changes. */
+    fun setSourceIcon(icon: Bitmap?) {
+        sourceIcon = icon
         invalidate()
     }
 
-    /** Cancels in-flight springs without changing state — called on ACTION_SCREEN_OFF. */
+    /** Real event content. Pass title null to clear back to no-content (IDLE look). */
+    fun setContent(title: String?, subtitle: String?, icon: Bitmap?, isPlaying: Boolean = true) {
+        contentTitle = title
+        contentSubtitle = subtitle
+        contentIcon = icon
+        contentIsPlaying = isPlaying
+        invalidate()
+        startAnimLoopIfNeeded()
+    }
+
+    /** Cancels in-flight springs and the visual-flourish loop — called on ACTION_SCREEN_OFF (rule 3). */
     fun freezeAnimations() {
         progressSpring.cancel()
         presenceSpring.cancel()
+        screenOn = false
+    }
+
+    /** Called on ACTION_SCREEN_ON — nothing else re-triggers a frozen flourish loop. */
+    fun resumeAnimationsIfNeeded() {
+        screenOn = true
+        startAnimLoopIfNeeded()
+    }
+
+    private fun startAnimLoopIfNeeded() {
+        if (animRunning || !screenOn || !shouldAnimate()) return
+        animRunning = true
+        animStartNanos = System.nanoTime()
+        postOnAnimation(tickRunnable)
+    }
+
+    private fun shouldAnimate(): Boolean {
+        if (contentTitle == null) return false
+        val barsAnimating = contentIsPlaying && progress < 0.98f
+        return barsAnimating || textOverflows(contentTitle, titlePaint) || textOverflows(contentSubtitle, subtitlePaint)
+    }
+
+    private fun textColumnWidthPx(): Float {
+        val textLeft = contentPaddingPx + artSizePx + dp(12f)
+        return expandedWidthPx - textLeft - contentPaddingPx
+    }
+
+    private fun textOverflows(text: String?, paint: Paint): Boolean {
+        if (text.isNullOrEmpty()) return false
+        return paint.measureText(text) > textColumnWidthPx()
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -174,20 +286,157 @@ class PillView(context: Context) : View(context) {
         val cornerRadius = idleRadius + (expandedCornerRadiusPx - idleRadius) * progress
         canvas.drawRoundRect(rect, cornerRadius, cornerRadius, paint)
 
-        val textAlpha = (progress * 255).toInt().coerceIn(0, 255)
-        val title = contentTitle
-        if (textAlpha > 0 && title != null) {
-            textPaint.alpha = textAlpha
-            val subtitle = contentSubtitle
-            if (subtitle != null) {
-                canvas.drawText(title, width / 2f, top + h / 2f - dp(2f), textPaint)
-                val subtitlePaint = Paint(textPaint).apply { textSize = dp(12f) }
-                canvas.drawText(subtitle, width / 2f, top + h / 2f + dp(16f), subtitlePaint)
-            } else {
-                val textY = top + h / 2f - (textPaint.descent() + textPaint.ascent()) / 2f
-                canvas.drawText(title, width / 2f, textY, textPaint)
-            }
+        val title = contentTitle ?: return
+        val compactAlpha = ((1f - progress) * presence * 255f).toInt().coerceIn(0, 255)
+        val expandedAlpha = (progress * presence * 255f).toInt().coerceIn(0, 255)
+        val elapsedSeconds = (System.nanoTime() - animStartNanos) / 1_000_000_000f
+
+        if (compactAlpha > 0) drawCompactContent(canvas, rect, compactAlpha, elapsedSeconds)
+        if (expandedAlpha > 0) {
+            drawExpandedContent(canvas, rect, expandedAlpha, title, contentSubtitle, contentIcon, elapsedSeconds)
+            // Only for real provider content (contentIcon is only ever set from
+            // a real PillEvent) — the no-event manual "Expanded" placeholder
+            // path has nothing for these buttons to control.
+            if (contentIcon != null) drawTransportControls(canvas, expandedAlpha)
         }
+    }
+
+    private fun drawCompactContent(canvas: Canvas, rect: RectF, alpha: Int, elapsedSeconds: Float) {
+        val icon = sourceIcon
+        if (icon != null) {
+            bitmapPaint.alpha = alpha
+            val iconTop = rect.top + (rect.height() - compactIconSizePx) / 2f
+            val iconLeft = rect.left + compactPaddingPx
+            bitmapDst.set(iconLeft, iconTop, iconLeft + compactIconSizePx, iconTop + compactIconSizePx)
+            canvas.drawBitmap(icon, null, bitmapDst, bitmapPaint)
+        }
+
+        barPaint.alpha = alpha
+        val barsTotalWidth = BAR_COUNT * barWidthPx + (BAR_COUNT - 1) * barGapPx
+        val barsLeft = rect.right - compactPaddingPx - barsTotalWidth
+        val barCenterY = rect.top + rect.height() / 2f
+        for (i in 0 until BAR_COUNT) {
+            // Paused: literal "||" pause glyph — skip the middle bar, draw
+            // the two outer bars at equal height. Playing: animated.
+            if (!contentIsPlaying && i == 1) continue
+            val fraction = if (contentIsPlaying) {
+                val phase = elapsedSeconds * 4f + i * 1.3f
+                0.35f + 0.65f * ((sin(phase) + 1f) / 2f)
+            } else {
+                0.9f
+            }
+            val barHeight = barMaxHeightPx * fraction
+            val barLeft = barsLeft + i * (barWidthPx + barGapPx)
+            barRect.set(barLeft, barCenterY - barHeight / 2f, barLeft + barWidthPx, barCenterY + barHeight / 2f)
+            canvas.drawRoundRect(barRect, barWidthPx / 2f, barWidthPx / 2f, barPaint)
+        }
+    }
+
+    private fun drawExpandedContent(
+        canvas: Canvas,
+        rect: RectF,
+        alpha: Int,
+        title: String,
+        subtitle: String?,
+        icon: Bitmap?,
+        elapsedSeconds: Float
+    ) {
+        val artLeft = rect.left + contentPaddingPx
+        val hasIcon = icon != null
+        if (icon != null) {
+            bitmapPaint.alpha = alpha
+            val artTop = rect.top + (rect.height() - artSizePx) / 2f
+            bitmapDst.set(artLeft, artTop, artLeft + artSizePx, artTop + artSizePx)
+            canvas.drawBitmap(icon, null, bitmapDst, bitmapPaint)
+        }
+
+        val textLeft = if (hasIcon) artLeft + artSizePx + dp(12f) else rect.left + contentPaddingPx
+        val textColumnWidth = rect.right - contentPaddingPx - textLeft
+        titlePaint.alpha = alpha
+        subtitlePaint.alpha = (alpha * 200 / 255)
+
+        val centerY = rect.top + rect.height() / 2f
+        if (subtitle != null) {
+            drawMarqueeLine(canvas, titlePaint, title, textLeft, centerY - dp(4f), textColumnWidth, elapsedSeconds)
+            drawMarqueeLine(canvas, subtitlePaint, subtitle, textLeft, centerY + dp(16f), textColumnWidth, elapsedSeconds)
+        } else {
+            val textY = centerY - (titlePaint.descent() + titlePaint.ascent()) / 2f
+            drawMarqueeLine(canvas, titlePaint, title, textLeft, textY, textColumnWidth, elapsedSeconds)
+        }
+    }
+
+    /** Play/pause + prev/next. Geometry here must match PillTouchView's hit-testing exactly. */
+    private fun drawTransportControls(canvas: Canvas, alpha: Int) {
+        val cx = width / 2f
+        val cy = expandedHeightPx - controlButtonBottomMarginPx - controlButtonRadiusPx
+        val prevX = cx - controlButtonSpacingPx
+        val nextX = cx + controlButtonSpacingPx
+
+        buttonBgPaint.alpha = (alpha * 0.14f).toInt()
+        canvas.drawCircle(prevX, cy, controlButtonRadiusPx, buttonBgPaint)
+        canvas.drawCircle(cx, cy, controlButtonRadiusPx, buttonBgPaint)
+        canvas.drawCircle(nextX, cy, controlButtonRadiusPx, buttonBgPaint)
+
+        iconPaint.alpha = alpha
+        drawSkipIcon(canvas, prevX, cy, pointingRight = false)
+        if (contentIsPlaying) drawPauseIcon(canvas, cx, cy) else drawPlayIcon(canvas, cx, cy)
+        drawSkipIcon(canvas, nextX, cy, pointingRight = true)
+    }
+
+    private fun drawPlayIcon(canvas: Canvas, cx: Float, cy: Float) {
+        val s = dp(7f)
+        iconPath.reset()
+        iconPath.moveTo(cx - s * 0.6f, cy - s)
+        iconPath.lineTo(cx - s * 0.6f, cy + s)
+        iconPath.lineTo(cx + s, cy)
+        iconPath.close()
+        canvas.drawPath(iconPath, iconPaint)
+    }
+
+    private fun drawPauseIcon(canvas: Canvas, cx: Float, cy: Float) {
+        val barW = dp(3.5f)
+        val barH = dp(14f)
+        val gap = dp(4f)
+        canvas.drawRoundRect(cx - gap / 2f - barW, cy - barH / 2f, cx - gap / 2f, cy + barH / 2f, barW / 2f, barW / 2f, iconPaint)
+        canvas.drawRoundRect(cx + gap / 2f, cy - barH / 2f, cx + gap / 2f + barW, cy + barH / 2f, barW / 2f, barW / 2f, iconPaint)
+    }
+
+    private fun drawSkipIcon(canvas: Canvas, cx: Float, cy: Float, pointingRight: Boolean) {
+        val s = dp(6f)
+        val dir = if (pointingRight) 1f else -1f
+        iconPath.reset()
+        iconPath.moveTo(cx - dir * s * 0.8f, cy - s)
+        iconPath.lineTo(cx - dir * s * 0.8f, cy + s)
+        iconPath.lineTo(cx + dir * s * 0.4f, cy)
+        iconPath.close()
+        canvas.drawPath(iconPath, iconPaint)
+
+        val barW = dp(2.5f)
+        val barX = cx + dir * s * 0.7f
+        canvas.drawRoundRect(barX - barW / 2f, cy - s, barX + barW / 2f, cy + s, barW / 2f, barW / 2f, iconPaint)
+    }
+
+    private fun drawMarqueeLine(
+        canvas: Canvas,
+        paint: Paint,
+        text: String,
+        x: Float,
+        y: Float,
+        maxWidth: Float,
+        elapsedSeconds: Float
+    ) {
+        val textWidth = paint.measureText(text)
+        if (textWidth <= maxWidth) {
+            canvas.drawText(text, x, y, paint)
+            return
+        }
+        canvas.save()
+        canvas.clipRect(x, y - paint.textSize * 1.2f, x + maxWidth, y + paint.textSize * 0.6f)
+        val scrollRangePx = textWidth + marqueeGapPx
+        val offset = (elapsedSeconds * marqueeSpeedPxPerSec) % scrollRangePx
+        canvas.drawText(text, x - offset, y, paint)
+        canvas.drawText(text, x - offset + scrollRangePx, y, paint)
+        canvas.restore()
     }
 
     private fun dp(value: Float): Float =

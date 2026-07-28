@@ -36,6 +36,10 @@ import dev.pill.dynamicpill.providers.spotify.SpotifyProvider
  * Also the single owner of PillStateMachine — both touch gestures (via
  * PillTouchView's callbacks) and the Arbiter's winner (real events) drive
  * the same state through one transition() path, so they can't disagree.
+ *
+ * Note: this class still directly constructs SpotifyProvider (a concrete
+ * providers.spotify class) — a deliberate, tracked exception to CLAUDE.md
+ * rule 7, not an oversight. See DEFERRED.md item 2.
  */
 class PillAccessibilityService : AccessibilityService() {
 
@@ -50,11 +54,16 @@ class PillAccessibilityService : AccessibilityService() {
     private val stateMachine = PillStateMachine(PillState.IDLE)
     private var arbiter: Arbiter? = null
     private var spotifyProvider: SpotifyProvider? = null
+    // The Arbiter's current winner. PillTouchView's control callbacks read
+    // action closures off this — not off `spotifyProvider` — so touch
+    // handling stays provider-agnostic (see DEFERRED.md item 1).
+    private var currentEvent: PillEvent? = null
 
     private val screenStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action == Intent.ACTION_SCREEN_OFF) {
-                renderView?.freezeAnimations()
+            when (intent.action) {
+                Intent.ACTION_SCREEN_OFF -> renderView?.freezeAnimations()
+                Intent.ACTION_SCREEN_ON -> renderView?.resumeAnimationsIfNeeded()
             }
         }
     }
@@ -65,7 +74,10 @@ class PillAccessibilityService : AccessibilityService() {
         addPillViews()
         registerReceiver(
             screenStateReceiver,
-            IntentFilter(Intent.ACTION_SCREEN_OFF),
+            IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_OFF)
+                addAction(Intent.ACTION_SCREEN_ON)
+            },
             Context.RECEIVER_NOT_EXPORTED
         )
         setUpEventEngine()
@@ -105,10 +117,12 @@ class PillAccessibilityService : AccessibilityService() {
         arbiter = eventArbiter
 
         spotify.start()
+        renderView?.setSourceIcon(spotify.appIcon)
     }
 
     private fun onWinnerChanged(event: PillEvent?) {
-        renderView?.setContent(event?.title, event?.subtitle)
+        currentEvent = event
+        renderView?.setContent(event?.title, event?.subtitle, event?.icon, event?.isPlaying ?: true)
         applyTransition(stateMachine.onEvent(event))
     }
 
@@ -168,7 +182,11 @@ class PillAccessibilityService : AccessibilityService() {
             expandedHeightPx,
             windowTopPx,
             onTap = { applyTransition(stateMachine.onTap()) },
-            onSwipeUp = { applyTransition(stateMachine.onSwipeUp()) }
+            onSwipeUp = { applyTransition(stateMachine.onSwipeUp()) },
+            hasControls = { currentEvent?.onPlayPause != null },
+            onPlayPause = { currentEvent?.onPlayPause?.invoke() },
+            onSkipPrevious = { currentEvent?.onSkipPrevious?.invoke() },
+            onSkipNext = { currentEvent?.onSkipNext?.invoke() }
         )
         windowManager.addView(touch, touchParams)
         touchView = touch
