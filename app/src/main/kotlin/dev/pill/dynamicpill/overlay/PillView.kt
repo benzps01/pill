@@ -4,13 +4,18 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.LinearGradient
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
+import android.graphics.Shader
+import android.os.SystemClock
 import android.util.TypedValue
 import android.view.View
 import androidx.dynamicanimation.animation.FloatPropertyCompat
 import androidx.dynamicanimation.animation.SpringAnimation
 import androidx.dynamicanimation.animation.SpringForce
+import dev.pill.dynamicpill.core.model.PillEvent
 import dev.pill.dynamicpill.core.state.PillState
 import kotlin.math.sin
 
@@ -26,12 +31,12 @@ import kotlin.math.sin
  *  - [progress] 0=idle size, 1=expanded size
  *  - [presence] 0=hidden (invisible), 1=fully shown
  *
- * Content (icon/title/subtitle) is set via [setContent] and cross-fades
- * between two looks purely as a function of [progress] — no separate
- * Compact/Expanded draw-mode flag is needed: at progress=0 with content
- * present, the source icon + equalizer bars show (Compact/PS); as progress
- * rises toward 1, that fades out and album art + title/artist fades in
- * (Expanded/ES). No content set at all (IDLE) draws nothing.
+ * Content is set via [setContent] and cross-fades between two looks purely
+ * as a function of [progress] — no separate Compact/Expanded draw-mode flag
+ * is needed: at progress=0 with content present, the source icon +
+ * equalizer bars show (Compact/PS); as progress rises toward 1, that fades
+ * out and album art + title/artist/scrubber/controls fades in
+ * (Expanded/ES). No content set at all (HIDDEN/IDLE) draws nothing.
  */
 class PillView(context: Context) : View(context) {
 
@@ -39,17 +44,22 @@ class PillView(context: Context) : View(context) {
         const val IDLE_WIDTH_DP = 130f
         const val IDLE_HEIGHT_DP = 30f
         const val EXPANDED_WIDTH_DP = 300f
-        const val EXPANDED_HEIGHT_DP = 130f
+        const val EXPANDED_HEIGHT_DP = 200f
         private const val EXPANDED_CORNER_RADIUS_DP = 28f
         // Collapsed (presence=0) width — smaller than idle height, so the
         // resting circle over the cutout reads as a small dot, not a disc as
         // wide as the pill is tall.
         private const val CIRCLE_WIDTH_DP = 30f
 
-        private const val ART_SIZE_DP = 48f
-        private const val CONTENT_PADDING_DP = 20f
-        private const val COMPACT_ICON_SIZE_DP = 18f
-        private const val COMPACT_PADDING_DP = 10f
+        private const val CONTENT_PADDING_DP = 18f
+        private const val BADGE_SIZE_DP = 16f
+        private const val BADGE_MARGIN_DP = 10f
+        private const val ART_SIZE_DP = 64f
+        private const val ART_TOP_DP = 34f
+        private const val SCRUBBER_GAP_DP = 14f
+        private const val TRACK_HEIGHT_DP = 4f
+        private const val TIME_LABEL_GAP_DP = 14f
+
         private const val BAR_COUNT = 3
         private const val BAR_WIDTH_DP = 3f
         private const val BAR_GAP_DP = 2f
@@ -62,7 +72,7 @@ class PillView(context: Context) : View(context) {
         // can't drift apart.
         const val CONTROL_BUTTON_DIAMETER_DP = 40f
         const val CONTROL_BUTTON_SPACING_DP = 56f
-        const val CONTROL_BUTTON_BOTTOM_MARGIN_DP = 20f
+        const val CONTROL_BUTTON_BOTTOM_MARGIN_DP = 16f
     }
 
     private val idleWidthPx = dp(IDLE_WIDTH_DP)
@@ -71,10 +81,16 @@ class PillView(context: Context) : View(context) {
     private val expandedHeightPx = dp(EXPANDED_HEIGHT_DP)
     private val expandedCornerRadiusPx = dp(EXPANDED_CORNER_RADIUS_DP)
     private val circleWidthPx = dp(CIRCLE_WIDTH_DP)
-    private val artSizePx = dp(ART_SIZE_DP)
+
     private val contentPaddingPx = dp(CONTENT_PADDING_DP)
-    private val compactIconSizePx = dp(COMPACT_ICON_SIZE_DP)
-    private val compactPaddingPx = dp(COMPACT_PADDING_DP)
+    private val badgeSizePx = dp(BADGE_SIZE_DP)
+    private val badgeMarginPx = dp(BADGE_MARGIN_DP)
+    private val artSizePx = dp(ART_SIZE_DP)
+    private val artTopPx = dp(ART_TOP_DP)
+    private val scrubberGapPx = dp(SCRUBBER_GAP_DP)
+    private val trackHeightPx = dp(TRACK_HEIGHT_DP)
+    private val timeLabelGapPx = dp(TIME_LABEL_GAP_DP)
+
     private val barWidthPx = dp(BAR_WIDTH_DP)
     private val barGapPx = dp(BAR_GAP_DP)
     private val barMaxHeightPx = dp(BAR_MAX_HEIGHT_DP)
@@ -85,6 +101,7 @@ class PillView(context: Context) : View(context) {
     private val controlButtonBottomMarginPx = dp(CONTROL_BUTTON_BOTTOM_MARGIN_DP)
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK }
+    private val gradientPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         textSize = dp(14f)
@@ -96,27 +113,35 @@ class PillView(context: Context) : View(context) {
         textAlign = Paint.Align.LEFT
         alpha = 200
     }
+    private val timePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        textSize = dp(10f)
+        alpha = 180
+    }
+    private val trackBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; alpha = 60 }
+    private val trackFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
     private val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val barPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
     private val buttonBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
     private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
-    private val iconPath = android.graphics.Path()
+    private val iconPath = Path()
     private val rect = RectF()
     private val bitmapDst = RectF()
     private val barRect = RectF()
+    private val trackRect = RectF()
 
     private var progress = 0f
     private var presence = 1f
-    private var contentTitle: String? = null
-    private var contentSubtitle: String? = null
-    private var contentIcon: Bitmap? = null
-    private var contentIsPlaying: Boolean = true
+    private var event: PillEvent? = null
     private var sourceIcon: Bitmap? = null
 
-    // Continuous, screen-on-only visual flourish (equalizer bars / marquee),
-    // not an event source — distinct from the rule-1 "never poll" ban on
-    // polling business state. Self-schedules via postOnAnimation, not a
-    // Handler.postDelayed timer.
+    private var cachedShader: LinearGradient? = null
+    private var cachedShaderColor: Int = 0
+
+    // Continuous, screen-on-only visual flourish (equalizer bars / marquee /
+    // scrubber advance), not an event source — distinct from the rule-1
+    // "never poll" ban on polling business state. Self-schedules via
+    // postOnAnimation, not a Handler.postDelayed timer.
     private var screenOn = true
     private var animRunning = false
     private var animStartNanos = 0L
@@ -168,7 +193,7 @@ class PillView(context: Context) : View(context) {
     }
 
     init {
-        applyState(PillState.IDLE, animate = false)
+        applyState(PillState.HIDDEN, animate = false)
     }
 
     /** Retargets the springs mid-flight if already animating (rule 5). */
@@ -189,18 +214,15 @@ class PillView(context: Context) : View(context) {
         startAnimLoopIfNeeded()
     }
 
-    /** Source app icon shown in Compact/PS (e.g. Spotify's icon) — set once, rarely changes. */
+    /** Source app icon shown in Compact/PS and as the ES badge (e.g. Spotify's icon) — set once, rarely changes. */
     fun setSourceIcon(icon: Bitmap?) {
         sourceIcon = icon
         invalidate()
     }
 
-    /** Real event content. Pass title null to clear back to no-content (IDLE look). */
-    fun setContent(title: String?, subtitle: String?, icon: Bitmap?, isPlaying: Boolean = true) {
-        contentTitle = title
-        contentSubtitle = subtitle
-        contentIcon = icon
-        contentIsPlaying = isPlaying
+    /** Real event content. Pass null to clear back to no-content (nothing drawn). */
+    fun setContent(event: PillEvent?) {
+        this.event = event
         invalidate()
         startAnimLoopIfNeeded()
     }
@@ -226,9 +248,10 @@ class PillView(context: Context) : View(context) {
     }
 
     private fun shouldAnimate(): Boolean {
-        if (contentTitle == null) return false
-        val barsAnimating = contentIsPlaying && progress < 0.98f
-        return barsAnimating || textOverflows(contentTitle, titlePaint) || textOverflows(contentSubtitle, subtitlePaint)
+        val e = event ?: return false
+        val barsAnimating = e.isPlaying && progress < 0.98f
+        val scrubberAdvancing = e.isPlaying && progress > 0.02f
+        return barsAnimating || scrubberAdvancing || textOverflows(e.title, titlePaint) || textOverflows(e.subtitle, subtitlePaint)
     }
 
     private fun textColumnWidthPx(): Float {
@@ -274,10 +297,6 @@ class PillView(context: Context) : View(context) {
         // and has zero dependency on the progress spring.
         val top = (idleHeightPx - circleWidthPx) / 2f * (1f - presence)
         rect.set(left, top, left + w, top + h)
-        // Presence no longer drives visibility — the collapsed circle stays
-        // fully opaque. True full-invisibility (fullscreen app/screen off,
-        // the real build-plan HIDDEN state) is a separate, not-yet-built
-        // concept — see the note on PillState.HIDDEN.
         paint.alpha = 255
         // Idle is a full capsule (radius = half height); Expanded is a flatter
         // rounded-rect look, not a stadium shape. At progress=0 this equals
@@ -286,40 +305,57 @@ class PillView(context: Context) : View(context) {
         val cornerRadius = idleRadius + (expandedCornerRadiusPx - idleRadius) * progress
         canvas.drawRoundRect(rect, cornerRadius, cornerRadius, paint)
 
-        val title = contentTitle ?: return
+        val e = event ?: return
         val compactAlpha = ((1f - progress) * presence * 255f).toInt().coerceIn(0, 255)
         val expandedAlpha = (progress * presence * 255f).toInt().coerceIn(0, 255)
         val elapsedSeconds = (System.nanoTime() - animStartNanos) / 1_000_000_000f
 
-        if (compactAlpha > 0) drawCompactContent(canvas, rect, compactAlpha, elapsedSeconds)
-        if (expandedAlpha > 0) {
-            drawExpandedContent(canvas, rect, expandedAlpha, title, contentSubtitle, contentIcon, elapsedSeconds)
-            // Only for real provider content (contentIcon is only ever set from
-            // a real PillEvent) — the no-event manual "Expanded" placeholder
-            // path has nothing for these buttons to control.
-            if (contentIcon != null) drawTransportControls(canvas, expandedAlpha)
+        // Crossfades over the base black rect above as progress rises.
+        if (expandedAlpha > 0 && e.accentColor != null) {
+            gradientPaint.shader = shaderFor(e.accentColor)
+            gradientPaint.alpha = expandedAlpha
+            canvas.drawRoundRect(rect, cornerRadius, cornerRadius, gradientPaint)
         }
+
+        if (compactAlpha > 0) drawCompactContent(canvas, rect, e, compactAlpha, elapsedSeconds)
+        if (expandedAlpha > 0) drawExpandedContent(canvas, rect, e, expandedAlpha, elapsedSeconds)
     }
 
-    private fun drawCompactContent(canvas: Canvas, rect: RectF, alpha: Int, elapsedSeconds: Float) {
+    private fun shaderFor(accentColor: Int): LinearGradient {
+        cachedShader?.let { if (cachedShaderColor == accentColor) return it }
+        val hsv = FloatArray(3)
+        Color.colorToHSV(accentColor, hsv)
+        hsv[2] = (hsv[2] * 0.85f).coerceIn(0f, 1f)
+        val topColor = Color.HSVToColor(hsv)
+        val shader = LinearGradient(
+            0f, 0f, expandedWidthPx, expandedHeightPx,
+            topColor, Color.BLACK, Shader.TileMode.CLAMP
+        )
+        cachedShader = shader
+        cachedShaderColor = accentColor
+        return shader
+    }
+
+    private fun drawCompactContent(canvas: Canvas, rect: RectF, e: PillEvent, alpha: Int, elapsedSeconds: Float) {
         val icon = sourceIcon
         if (icon != null) {
             bitmapPaint.alpha = alpha
-            val iconTop = rect.top + (rect.height() - compactIconSizePx) / 2f
-            val iconLeft = rect.left + compactPaddingPx
-            bitmapDst.set(iconLeft, iconTop, iconLeft + compactIconSizePx, iconTop + compactIconSizePx)
+            val iconSize = dp(18f)
+            val iconTop = rect.top + (rect.height() - iconSize) / 2f
+            val iconLeft = rect.left + dp(10f)
+            bitmapDst.set(iconLeft, iconTop, iconLeft + iconSize, iconTop + iconSize)
             canvas.drawBitmap(icon, null, bitmapDst, bitmapPaint)
         }
 
         barPaint.alpha = alpha
         val barsTotalWidth = BAR_COUNT * barWidthPx + (BAR_COUNT - 1) * barGapPx
-        val barsLeft = rect.right - compactPaddingPx - barsTotalWidth
+        val barsLeft = rect.right - dp(10f) - barsTotalWidth
         val barCenterY = rect.top + rect.height() / 2f
         for (i in 0 until BAR_COUNT) {
             // Paused: literal "||" pause glyph — skip the middle bar, draw
             // the two outer bars at equal height. Playing: animated.
-            if (!contentIsPlaying && i == 1) continue
-            val fraction = if (contentIsPlaying) {
+            if (!e.isPlaying && i == 1) continue
+            val fraction = if (e.isPlaying) {
                 val phase = elapsedSeconds * 4f + i * 1.3f
                 0.35f + 0.65f * ((sin(phase) + 1f) / 2f)
             } else {
@@ -332,22 +368,23 @@ class PillView(context: Context) : View(context) {
         }
     }
 
-    private fun drawExpandedContent(
-        canvas: Canvas,
-        rect: RectF,
-        alpha: Int,
-        title: String,
-        subtitle: String?,
-        icon: Bitmap?,
-        elapsedSeconds: Float
-    ) {
-        val artLeft = rect.left + contentPaddingPx
-        val hasIcon = icon != null
-        if (icon != null) {
+    private fun drawExpandedContent(canvas: Canvas, rect: RectF, e: PillEvent, alpha: Int, elapsedSeconds: Float) {
+        val badge = sourceIcon
+        if (badge != null) {
             bitmapPaint.alpha = alpha
-            val artTop = rect.top + (rect.height() - artSizePx) / 2f
+            val badgeLeft = rect.left + badgeMarginPx
+            val badgeTop = rect.top + badgeMarginPx
+            bitmapDst.set(badgeLeft, badgeTop, badgeLeft + badgeSizePx, badgeTop + badgeSizePx)
+            canvas.drawBitmap(badge, null, bitmapDst, bitmapPaint)
+        }
+
+        val artLeft = rect.left + contentPaddingPx
+        val artTop = rect.top + artTopPx
+        val hasIcon = e.icon != null
+        if (e.icon != null) {
+            bitmapPaint.alpha = alpha
             bitmapDst.set(artLeft, artTop, artLeft + artSizePx, artTop + artSizePx)
-            canvas.drawBitmap(icon, null, bitmapDst, bitmapPaint)
+            canvas.drawBitmap(e.icon, null, bitmapDst, bitmapPaint)
         }
 
         val textLeft = if (hasIcon) artLeft + artSizePx + dp(12f) else rect.left + contentPaddingPx
@@ -355,18 +392,56 @@ class PillView(context: Context) : View(context) {
         titlePaint.alpha = alpha
         subtitlePaint.alpha = (alpha * 200 / 255)
 
-        val centerY = rect.top + rect.height() / 2f
+        val titleY = artTop + dp(22f)
+        drawMarqueeLine(canvas, titlePaint, e.title, textLeft, titleY, textColumnWidth, elapsedSeconds)
+        val subtitle = e.subtitle
         if (subtitle != null) {
-            drawMarqueeLine(canvas, titlePaint, title, textLeft, centerY - dp(4f), textColumnWidth, elapsedSeconds)
-            drawMarqueeLine(canvas, subtitlePaint, subtitle, textLeft, centerY + dp(16f), textColumnWidth, elapsedSeconds)
-        } else {
-            val textY = centerY - (titlePaint.descent() + titlePaint.ascent()) / 2f
-            drawMarqueeLine(canvas, titlePaint, title, textLeft, textY, textColumnWidth, elapsedSeconds)
+            drawMarqueeLine(canvas, subtitlePaint, subtitle, textLeft, titleY + dp(20f), textColumnWidth, elapsedSeconds)
         }
+
+        if (e.durationMs > 0) drawScrubber(canvas, rect, e, alpha, artTop)
+
+        drawTransportControls(canvas, e, alpha)
+    }
+
+    private fun drawScrubber(canvas: Canvas, rect: RectF, e: PillEvent, alpha: Int, artTop: Float) {
+        val trackTop = artTop + artSizePx + scrubberGapPx
+        val trackLeft = rect.left + contentPaddingPx
+        val trackRight = rect.right - contentPaddingPx
+
+        val positionMs = if (e.isPlaying) {
+            val elapsedMs = SystemClock.elapsedRealtime() - e.positionUpdateTimeMs
+            (e.positionMs + (elapsedMs * e.playbackSpeed).toLong()).coerceIn(0L, e.durationMs)
+        } else {
+            e.positionMs.coerceIn(0L, e.durationMs)
+        }
+        val fraction = (positionMs.toFloat() / e.durationMs.toFloat()).coerceIn(0f, 1f)
+
+        trackBgPaint.alpha = (60 * alpha / 255)
+        trackRect.set(trackLeft, trackTop, trackRight, trackTop + trackHeightPx)
+        canvas.drawRoundRect(trackRect, trackHeightPx / 2f, trackHeightPx / 2f, trackBgPaint)
+
+        trackFillPaint.alpha = alpha
+        trackRect.set(trackLeft, trackTop, trackLeft + (trackRight - trackLeft) * fraction, trackTop + trackHeightPx)
+        canvas.drawRoundRect(trackRect, trackHeightPx / 2f, trackHeightPx / 2f, trackFillPaint)
+
+        timePaint.alpha = (180 * alpha / 255)
+        val timeY = trackTop + trackHeightPx + timeLabelGapPx
+        timePaint.textAlign = Paint.Align.LEFT
+        canvas.drawText(formatMs(positionMs), trackLeft, timeY, timePaint)
+        timePaint.textAlign = Paint.Align.RIGHT
+        canvas.drawText("-${formatMs(e.durationMs - positionMs)}", trackRight, timeY, timePaint)
+    }
+
+    private fun formatMs(ms: Long): String {
+        val totalSeconds = (ms / 1000).coerceAtLeast(0)
+        val minutes = totalSeconds / 60
+        val seconds = totalSeconds % 60
+        return "%d:%02d".format(minutes, seconds)
     }
 
     /** Play/pause + prev/next. Geometry here must match PillTouchView's hit-testing exactly. */
-    private fun drawTransportControls(canvas: Canvas, alpha: Int) {
+    private fun drawTransportControls(canvas: Canvas, e: PillEvent, alpha: Int) {
         val cx = width / 2f
         val cy = expandedHeightPx - controlButtonBottomMarginPx - controlButtonRadiusPx
         val prevX = cx - controlButtonSpacingPx
@@ -379,7 +454,7 @@ class PillView(context: Context) : View(context) {
 
         iconPaint.alpha = alpha
         drawSkipIcon(canvas, prevX, cy, pointingRight = false)
-        if (contentIsPlaying) drawPauseIcon(canvas, cx, cy) else drawPlayIcon(canvas, cx, cy)
+        if (e.isPlaying) drawPauseIcon(canvas, cx, cy) else drawPlayIcon(canvas, cx, cy)
         drawSkipIcon(canvas, nextX, cy, pointingRight = true)
     }
 

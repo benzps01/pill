@@ -3,14 +3,31 @@ package dev.pill.dynamicpill.providers.spotify
 import android.content.ComponentName
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
+import android.os.Handler
+import android.os.Looper
+import androidx.palette.graphics.Palette
 import dev.pill.dynamicpill.core.event.EventProvider
 import dev.pill.dynamicpill.core.model.EventType
 import dev.pill.dynamicpill.core.model.PillEvent
+
+/**
+ * True only for playback states that mean "there's something to show" —
+ * playing or paused. Anything else (stopped, none, buffering-with-no-prior-
+ * state, or no state at all) means the session isn't actually active,
+ * regardless of whether Android still lists it. Pulled out as its own named
+ * function, taking a plain Int rather than a MediaController/PlaybackState,
+ * so it's independently unit-testable and the "is this session really
+ * live?" rule has exactly one place it's defined instead of being an inline
+ * expression buried in [SpotifyProvider.update].
+ */
+internal fun isSpotifyPlaybackActive(playbackStateCode: Int?): Boolean =
+    playbackStateCode == PlaybackState.STATE_PLAYING || playbackStateCode == PlaybackState.STATE_PAUSED
 
 /**
  * Wraps the Spotify MediaSession, if one is active. Event-driven throughout
@@ -23,8 +40,9 @@ import dev.pill.dynamicpill.core.model.PillEvent
  * needs a bound NotificationListenerService component to authorize session
  * access, unrelated to the Spotify notification itself.
  *
- * Scrubber extrapolation (rule 10) isn't wired yet — no transport UI exists
- * to show a scrub position into.
+ * Scrubber position (rule 10) is exposed as position + speed + update-time
+ * on [PillEvent]; the renderer extrapolates the live position from those,
+ * this class never polls PlaybackState on a timer.
  */
 class SpotifyProvider(
     private val context: Context,
@@ -34,27 +52,49 @@ class SpotifyProvider(
     private companion object {
         private const val SPOTIFY_PACKAGE = "com.spotify.music"
         private const val PRIORITY = 5
-        private const val ART_SIZE_PX = 72
+        private const val DEFAULT_ACCENT_COLOR = 0xFF303030.toInt()
+        // A paused session can be either "you tapped pause, still engaged"
+        // or "the app was swiped from recents and its session just lingers
+        // paused indefinitely" — MediaSession gives no way to tell these
+        // apart directly (task-removal doesn't necessarily kill the
+        // session; that's by design, so media controls survive backgrounding).
+        // A short idle expiry is the practical compromise: paused stays live
+        // briefly, then auto-clears if nothing real happens.
+        private const val PAUSED_EXPIRY_MS = 2 * 60 * 1000L
     }
 
     override val id = "spotify"
     override var currentEvent: PillEvent? = null
         private set
 
-    /** Fetched once, never changes — the app icon shown in Compact/PS. */
+    /** Fetched once, never changes — the app icon shown in Compact/PS and the ES badge. */
     var appIcon: Bitmap? = null
         private set
+
+    private val density = context.resources.displayMetrics.density
+    private val artSizePx = (64 * density).toInt()
+    private val iconSizePx = (32 * density).toInt()
 
     private var listener: (() -> Unit)? = null
     private val mediaSessionManager =
         context.getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
     private var activeController: MediaController? = null
 
-    // Downscaled-art cache, keyed by track identity — rule 9: never hold
-    // the full-size bitmap Spotify hands us past the synchronous downscale
-    // below, and never re-downscale on every callback for the same track.
+    // One-shot deferred expiry for a paused session — not a polling loop
+    // (rule 1): it fires once, is cancelled/reset the moment there's real
+    // activity (a fresh PLAY), and its firing is itself the single event
+    // that clears a gone-stale session, not a recurring state check.
+    private val expiryHandler = Handler(Looper.getMainLooper())
+    private var expiryRunnable: Runnable? = null
+    private var pausedExpired = false
+
+    // Downscaled-art + accent-color cache, keyed by track identity — rule 9:
+    // never hold the full-size bitmap Spotify hands us past the synchronous
+    // downscale below, and never redo this work on every callback for the
+    // same track.
     private var cachedArtKey: String? = null
     private var cachedArt: Bitmap? = null
+    private var cachedAccentColor: Int = DEFAULT_ACCENT_COLOR
 
     private val controllerCallback = object : MediaController.Callback() {
         override fun onPlaybackStateChanged(state: PlaybackState?) = update()
@@ -84,6 +124,7 @@ class SpotifyProvider(
         mediaSessionManager.removeOnActiveSessionsChangedListener(sessionsChangedListener)
         activeController?.unregisterCallback(controllerCallback)
         activeController = null
+        cancelExpiry()
     }
 
     override fun setListener(listener: () -> Unit) {
@@ -109,26 +150,60 @@ class SpotifyProvider(
         activeController?.unregisterCallback(controllerCallback)
         activeController = controller
         controller?.registerCallback(controllerCallback)
+        cancelExpiry()
+        pausedExpired = false
         update()
+    }
+
+    private fun scheduleExpiry() {
+        if (expiryRunnable != null) return
+        val runnable = Runnable {
+            pausedExpired = true
+            expiryRunnable = null
+            update()
+        }
+        expiryRunnable = runnable
+        expiryHandler.postDelayed(runnable, PAUSED_EXPIRY_MS)
+    }
+
+    private fun cancelExpiry() {
+        expiryRunnable?.let { expiryHandler.removeCallbacks(it) }
+        expiryRunnable = null
     }
 
     private fun update() {
         val controller = activeController
-        val playbackState = controller?.playbackState?.state
+        val playbackState = controller?.playbackState
         val metadata = controller?.metadata
-        val isActive = playbackState == PlaybackState.STATE_PLAYING || playbackState == PlaybackState.STATE_PAUSED
-        currentEvent = if (controller != null && isActive && metadata != null) {
+        val stateCode = playbackState?.state
+        when (stateCode) {
+            PlaybackState.STATE_PLAYING -> {
+                cancelExpiry()
+                pausedExpired = false
+            }
+            PlaybackState.STATE_PAUSED -> scheduleExpiry()
+            else -> cancelExpiry()
+        }
+        val isActive = isSpotifyPlaybackActive(stateCode) &&
+            !(stateCode == PlaybackState.STATE_PAUSED && pausedExpired)
+        currentEvent = if (controller != null && isActive && metadata != null && playbackState != null) {
+            val art = artFor(metadata)
             PillEvent(
                 providerId = id,
                 type = EventType.MEDIA,
                 priority = PRIORITY,
                 title = metadata.getString(MediaMetadata.METADATA_KEY_TITLE) ?: "",
                 subtitle = metadata.getString(MediaMetadata.METADATA_KEY_ARTIST),
-                icon = artFor(metadata),
-                isPlaying = playbackState == PlaybackState.STATE_PLAYING,
+                icon = art,
+                isPlaying = playbackState.state == PlaybackState.STATE_PLAYING,
                 onPlayPause = ::togglePlayPause,
                 onSkipPrevious = ::skipPrevious,
-                onSkipNext = ::skipNext
+                onSkipNext = ::skipNext,
+                accentColor = cachedAccentColor,
+                positionMs = playbackState.position,
+                durationMs = metadata.getLong(MediaMetadata.METADATA_KEY_DURATION),
+                playbackSpeed = playbackState.playbackSpeed,
+                positionUpdateTimeMs = playbackState.lastPositionUpdateTime
             )
         } else {
             null
@@ -144,10 +219,13 @@ class SpotifyProvider(
         val fullSize = metadata.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
             ?: metadata.getBitmap(MediaMetadata.METADATA_KEY_ART)
         val downscaled = fullSize?.let {
-            Bitmap.createScaledBitmap(it, ART_SIZE_PX, ART_SIZE_PX, true)
+            Bitmap.createScaledBitmap(it, artSizePx, artSizePx, true)
         }
         cachedArtKey = key
         cachedArt = downscaled
+        cachedAccentColor = downscaled?.let {
+            Palette.from(it).generate().getDominantColor(DEFAULT_ACCENT_COLOR)
+        } ?: DEFAULT_ACCENT_COLOR
         return downscaled
     }
 
@@ -163,10 +241,10 @@ class SpotifyProvider(
                 drawable.intrinsicHeight.coerceAtLeast(1),
                 Bitmap.Config.ARGB_8888
             ).also { bmp ->
-                val canvas = android.graphics.Canvas(bmp)
+                val canvas = Canvas(bmp)
                 drawable.setBounds(0, 0, canvas.width, canvas.height)
                 drawable.draw(canvas)
             }
-        return Bitmap.createScaledBitmap(bitmap, ART_SIZE_PX, ART_SIZE_PX, true)
+        return Bitmap.createScaledBitmap(bitmap, iconSizePx, iconSizePx, true)
     }
 }

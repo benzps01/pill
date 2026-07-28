@@ -4,33 +4,29 @@ import dev.pill.dynamicpill.core.model.PillEvent
 
 /**
  * Pure Kotlin, no Android deps — unit-testable in isolation (CLAUDE.md `core` rule).
- * Phase 1 only wires tap and swipe-up; COMPACT/TRANSIENT_POP are reachable states
- * reserved for the event arbiter landing in Phase 3.
+ *
+ * With no active event, the pill rests as HIDDEN (the collapsed circle) —
+ * there's nothing to show, so tapping it is a no-op rather than opening a
+ * placeholder EXPANDED. That means EXPANDED can now only ever be reached
+ * from COMPACT (i.e. a live event was open when tapped), so it's always
+ * safe to auto-collapse back to HIDDEN the moment that event ends — no
+ * separate "was this a manual expand?" tracking needed.
  */
-class PillStateMachine(initial: PillState = PillState.IDLE) {
+class PillStateMachine(initial: PillState = PillState.HIDDEN) {
 
     var state: PillState = initial
         private set
 
-    // True only when the current EXPANDED was reached by tapping a live
-    // event open (COMPACT -> EXPANDED). Lets onEvent tell "tapped open an
-    // event, then it ended" (should auto-collapse) apart from "manually
-    // expanded with nothing playing" (should stay open regardless of
-    // unrelated event churn).
-    private var expandedViaEvent = false
+    private var hasActiveEvent = false
 
     fun onTap(): PillState {
         state = when (state) {
-            PillState.HIDDEN -> PillState.IDLE
-            PillState.IDLE -> {
-                expandedViaEvent = false
-                PillState.EXPANDED
-            }
-            PillState.EXPANDED -> PillState.IDLE
-            PillState.COMPACT -> {
-                expandedViaEvent = true
-                PillState.EXPANDED
-            }
+            // A live event can still be playing after a manual swipe-up
+            // dismiss (HIDDEN) — tap should reveal it again, not stay stuck.
+            // Only a genuinely empty pill (no event at all) no-ops.
+            PillState.HIDDEN, PillState.IDLE -> if (hasActiveEvent) PillState.COMPACT else state
+            PillState.EXPANDED -> if (hasActiveEvent) PillState.COMPACT else PillState.HIDDEN
+            PillState.COMPACT -> PillState.EXPANDED
             PillState.TRANSIENT_POP -> PillState.EXPANDED
         }
         return state
@@ -43,24 +39,19 @@ class PillStateMachine(initial: PillState = PillState.IDLE) {
 
     /**
      * Renderer-facing mapping from the Arbiter's winner to a pill state
-     * (build plan Phase 3). A live event surfaces the pill as COMPACT, no
-     * event drops it back to IDLE. EXPANDED is left alone unless it was
-     * reached by tapping open a live event ([expandedViaEvent]) and that
-     * event has now ended — a manually-opened EXPANDED (nothing was
-     * playing) stays open regardless of unrelated event churn. Finer
-     * semantics — TRANSIENT_POP, staying pill-shaped through a Spotify
-     * session instead of collapsing — are deferred; see the note on
-     * [PillState].
+     * (build plan Phase 3). A live event surfaces the pill as COMPACT; no
+     * event collapses it to HIDDEN, including out of EXPANDED — since
+     * EXPANDED is now only reachable via a live event, there's no manual
+     * "expanded with nothing playing" case to protect. Finer semantics —
+     * TRANSIENT_POP — are deferred; see the note on [PillState].
      */
     fun onEvent(event: PillEvent?): PillState {
+        hasActiveEvent = event != null
         if (state == PillState.EXPANDED) {
-            if (expandedViaEvent && event == null) {
-                expandedViaEvent = false
-                state = PillState.IDLE
-            }
+            if (!hasActiveEvent) state = PillState.HIDDEN
             return state
         }
-        state = if (event != null) PillState.COMPACT else PillState.IDLE
+        state = if (hasActiveEvent) PillState.COMPACT else PillState.HIDDEN
         return state
     }
 }

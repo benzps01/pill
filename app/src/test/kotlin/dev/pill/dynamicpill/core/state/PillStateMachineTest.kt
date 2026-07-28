@@ -10,37 +10,67 @@ class PillStateMachineTest {
     private val event = PillEvent("spotify", EventType.MEDIA, priority = 5, title = "Song")
 
     @Test
-    fun `expanding a live event then losing it collapses to idle`() {
-        val machine = PillStateMachine(PillState.IDLE)
-        machine.onEvent(event) // -> COMPACT
-        machine.onTap() // COMPACT -> EXPANDED, expandedViaEvent = true
-        assertEquals(PillState.EXPANDED, machine.state)
-
-        machine.onEvent(null) // event ended while looking at it
-        assertEquals(PillState.IDLE, machine.state)
+    fun `starts hidden and stays hidden with no event`() {
+        val machine = PillStateMachine()
+        assertEquals(PillState.HIDDEN, machine.state)
     }
 
     @Test
-    fun `manually expanding with nothing playing stays open through event churn`() {
-        val machine = PillStateMachine(PillState.IDLE)
-        machine.onTap() // IDLE -> EXPANDED, expandedViaEvent = false
-        assertEquals(PillState.EXPANDED, machine.state)
+    fun `tapping an empty pill is a no-op`() {
+        val machine = PillStateMachine()
+        machine.onTap()
+        assertEquals(PillState.HIDDEN, machine.state)
+    }
 
+    @Test
+    fun `a live event surfaces compact, tap expands it`() {
+        val machine = PillStateMachine()
         machine.onEvent(event)
-        assertEquals(PillState.EXPANDED, machine.state)
+        assertEquals(PillState.COMPACT, machine.state)
 
-        machine.onEvent(null)
+        machine.onTap()
         assertEquals(PillState.EXPANDED, machine.state)
     }
 
     @Test
-    fun `expanded event still playing is unaffected by onEvent`() {
-        val machine = PillStateMachine(PillState.IDLE)
+    fun `expanded event ending auto-collapses to hidden`() {
+        val machine = PillStateMachine()
         machine.onEvent(event)
         machine.onTap()
         assertEquals(PillState.EXPANDED, machine.state)
 
+        machine.onEvent(null)
+        assertEquals(PillState.HIDDEN, machine.state)
+    }
+
+    @Test
+    fun `tapping to collapse expanded returns to compact while event still live`() {
+        val machine = PillStateMachine()
         machine.onEvent(event)
+        machine.onTap() // -> EXPANDED
+        machine.onTap() // manual collapse, event still live
+        assertEquals(PillState.COMPACT, machine.state)
+    }
+
+    @Test
+    fun `tapping after a swipe-up dismiss with the event still live reopens compact`() {
+        val machine = PillStateMachine()
+        machine.onEvent(event) // -> COMPACT
+        machine.onSwipeUp() // manual dismiss -> HIDDEN, but the song is still playing
+        assertEquals(PillState.HIDDEN, machine.state)
+
+        machine.onTap()
+        assertEquals(PillState.COMPACT, machine.state)
+    }
+
+    @Test
+    fun `swipe up dismisses to hidden from any state`() {
+        val machine = PillStateMachine()
+        machine.onEvent(event)
+        machine.onTap()
         assertEquals(PillState.EXPANDED, machine.state)
+
+        machine.onSwipeUp()
+        assertEquals(PillState.HIDDEN, machine.state)
     }
 }

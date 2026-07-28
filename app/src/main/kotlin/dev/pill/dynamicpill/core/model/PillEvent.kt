@@ -37,6 +37,15 @@ data class PillEvent(
     val onPlayPause: (() -> Unit)? = null,
     val onSkipPrevious: (() -> Unit)? = null,
     val onSkipNext: (() -> Unit)? = null,
+    /** Dominant color extracted from [icon] (media art), for background tint. Null = no tint. */
+    val accentColor: Int? = null,
+    // Scrubber source data (rule 10) — the renderer extrapolates the live
+    // position from these rather than polling PlaybackState on a timer:
+    // positionMs + (elapsedRealtime() - positionUpdateTimeMs) * playbackSpeed.
+    val positionMs: Long = 0L,
+    val durationMs: Long = 0L,
+    val playbackSpeed: Float = 1f,
+    val positionUpdateTimeMs: Long = 0L,
 )
 
 enum class EventType {

@@ -52,6 +52,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.dynamicanimation:dynamicanimation:1.0.0")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
+    implementation("androidx.palette:palette-ktx:1.0.0")
 
     val composeBom = platform("androidx.compose:compose-bom:2024.06.00")
     implementation(composeBom)

@@ -51,7 +51,7 @@ class PillAccessibilityService : AccessibilityService() {
     private var renderView: PillView? = null
     private var touchView: PillTouchView? = null
     private val deviceProfile: DeviceProfile = Pixel8ProProfile
-    private val stateMachine = PillStateMachine(PillState.IDLE)
+    private val stateMachine = PillStateMachine(PillState.HIDDEN)
     private var arbiter: Arbiter? = null
     private var spotifyProvider: SpotifyProvider? = null
     // The Arbiter's current winner. PillTouchView's control callbacks read
@@ -122,7 +122,7 @@ class PillAccessibilityService : AccessibilityService() {
 
     private fun onWinnerChanged(event: PillEvent?) {
         currentEvent = event
-        renderView?.setContent(event?.title, event?.subtitle, event?.icon, event?.isPlaying ?: true)
+        renderView?.setContent(event)
         applyTransition(stateMachine.onEvent(event))
     }
 

@@ -1,20 +1,16 @@
 package dev.pill.dynamicpill.core.state
 
 /**
- * DEFERRED (Phase 3/4, needs the real Arbiter/EventProvider):
+ * Per the build plan (§6): HIDDEN = nothing to show (no active event, or a
+ * manual swipe-up dismissal) — rendered as the collapsed circle over the
+ * cutout, not true invisibility. IDLE is effectively unreachable now that
+ * [PillStateMachine] resolves "no event" straight to HIDDEN rather than an
+ * empty pill shape; kept in the enum since the build plan defines it and a
+ * future manual-idle-pill affordance may want it back.
  *
- * Per the build plan (§6), HIDDEN means "nothing" — reserved for system
- * context (fullscreen/immersive app, screen off, landscape), not a manual
- * gesture. Right now [PillTouchView]'s swipe-up drives HIDDEN as a Phase-1
- * placeholder, and [dev.pill.dynamicpill.overlay.PillView] renders it as a
- * collapsed circle over the cutout (not true invisibility) since that's the
- * more useful placeholder visual. Once the Arbiter exists, true full-hide
- * (screen off / fullscreen app) should be a separate visibility mechanism
- * from this circle-collapse, and swipe-up's real meaning needs revisiting —
- * see build plan §6 for the intended Idle/Compact/Expanded semantics
- * (Compact in particular is unbuilt: PillView never renders it distinctly
- * from Idle yet, and "stay Compact while media is playing instead of
- * returning to Idle" requires the Arbiter to know about live sessions).
+ * COMPACT is still under-differentiated from a design standpoint — content
+ * layout for it is being built out provider-by-provider (see design.md)
+ * rather than as one generic look.
  */
 enum class PillState {
     HIDDEN, IDLE, COMPACT, EXPANDED, TRANSIENT_POP
