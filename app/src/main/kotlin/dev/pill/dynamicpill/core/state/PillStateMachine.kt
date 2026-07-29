@@ -5,12 +5,22 @@ import dev.pill.dynamicpill.core.model.PillEvent
 /**
  * Pure Kotlin, no Android deps — unit-testable in isolation (CLAUDE.md `core` rule).
  *
- * With no active event, the pill rests as HIDDEN (the collapsed circle) —
- * there's nothing to show, so tapping it is a no-op rather than opening a
- * placeholder EXPANDED. That means EXPANDED can now only ever be reached
- * from COMPACT (i.e. a live event was open when tapped), so it's always
- * safe to auto-collapse back to HIDDEN the moment that event ends — no
- * separate "was this a manual expand?" tracking needed.
+ * Transitions are named after *intent* ([expand] / [collapse] / [dismiss]),
+ * not after the gesture that triggered them, because gestures are
+ * user-bindable now (see `core.gesture.GestureBindings`) — "swipe up" is no
+ * longer synonymous with any particular movement through the states.
+ *
+ * [expand] and [collapse] are exact inverses, stepping one level at a time:
+ *
+ *     HIDDEN  --expand-->    COMPACT  --expand-->    EXPANDED
+ *     HIDDEN  <--collapse--  COMPACT  <--collapse--  EXPANDED
+ *
+ * With no active event the pill rests as HIDDEN (the collapsed circle) —
+ * there's nothing to show, so expanding is a no-op rather than opening a
+ * placeholder. That means EXPANDED can only ever be reached from COMPACT
+ * (i.e. a live event was open), so it's always safe to auto-collapse back to
+ * HIDDEN the moment that event ends — no "was this a manual expand?"
+ * tracking needed.
  */
 class PillStateMachine(initial: PillState = PillState.HIDDEN) {
 
@@ -19,20 +29,39 @@ class PillStateMachine(initial: PillState = PillState.HIDDEN) {
 
     private var hasActiveEvent = false
 
-    fun onTap(): PillState {
+    /**
+     * Steps up one level. No-op at the top.
+     *
+     * A live event can still be playing after a manual dismiss, so expanding
+     * out of HIDDEN reveals it again rather than staying stuck; only a
+     * genuinely empty pill (no event at all) no-ops.
+     */
+    fun expand(): PillState {
         state = when (state) {
-            // A live event can still be playing after a manual swipe-up
-            // dismiss (HIDDEN) — tap should reveal it again, not stay stuck.
-            // Only a genuinely empty pill (no event at all) no-ops.
             PillState.HIDDEN, PillState.IDLE -> if (hasActiveEvent) PillState.COMPACT else state
-            PillState.EXPANDED -> if (hasActiveEvent) PillState.COMPACT else PillState.HIDDEN
-            PillState.COMPACT -> PillState.EXPANDED
-            PillState.TRANSIENT_POP -> PillState.EXPANDED
+            PillState.COMPACT, PillState.TRANSIENT_POP -> PillState.EXPANDED
+            PillState.EXPANDED -> PillState.EXPANDED
         }
         return state
     }
 
-    fun onSwipeUp(): PillState {
+    /**
+     * Steps down one level. Bottoms out at HIDDEN.
+     *
+     * This can momentarily leave COMPACT showing with no live event, which
+     * doesn't matter: [onEvent] resolves a null event straight to HIDDEN, so
+     * the state can't linger there.
+     */
+    fun collapse(): PillState {
+        state = when (state) {
+            PillState.EXPANDED, PillState.TRANSIENT_POP -> PillState.COMPACT
+            PillState.COMPACT, PillState.IDLE, PillState.HIDDEN -> PillState.HIDDEN
+        }
+        return state
+    }
+
+    /** Straight back to the resting circle from anywhere, skipping the levels between. */
+    fun dismiss(): PillState {
         state = PillState.HIDDEN
         return state
     }
@@ -41,9 +70,13 @@ class PillStateMachine(initial: PillState = PillState.HIDDEN) {
      * Renderer-facing mapping from the Arbiter's winner to a pill state
      * (build plan Phase 3). A live event surfaces the pill as COMPACT; no
      * event collapses it to HIDDEN, including out of EXPANDED — since
-     * EXPANDED is now only reachable via a live event, there's no manual
-     * "expanded with nothing playing" case to protect. Finer semantics —
-     * TRANSIENT_POP — are deferred; see the note on [PillState].
+     * EXPANDED is only reachable via a live event, there's no manual
+     * "expanded with nothing playing" case to protect.
+     *
+     * Deliberately does *not* touch EXPANDED while an event is still live:
+     * metadata churn (track change, play/pause) must never yank a card shut
+     * under the user. Finer semantics — TRANSIENT_POP — are deferred; see
+     * the note on [PillState].
      */
     fun onEvent(event: PillEvent?): PillState {
         hasActiveEvent = event != null

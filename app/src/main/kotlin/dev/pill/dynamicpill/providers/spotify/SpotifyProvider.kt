@@ -1,7 +1,9 @@
 package dev.pill.dynamicpill.providers.spotify
 
+import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
@@ -71,6 +73,10 @@ class SpotifyProvider(
     var appIcon: Bitmap? = null
         private set
 
+    /** Fetched once — the app's display name, shown in the ES header row. */
+    var appLabel: String? = null
+        private set
+
     private val density = context.resources.displayMetrics.density
     private val artSizePx = (64 * density).toInt()
     private val iconSizePx = (32 * density).toInt()
@@ -112,6 +118,7 @@ class SpotifyProvider(
 
     fun start() {
         appIcon = loadAppIcon()
+        appLabel = loadAppLabel()
         mediaSessionManager.addOnActiveSessionsChangedListener(
             sessionsChangedListener,
             notificationListenerComponent
@@ -143,6 +150,30 @@ class SpotifyProvider(
 
     fun skipPrevious() {
         activeController?.transportControls?.skipToPrevious()
+    }
+
+    /**
+     * Brings Spotify to the foreground (GestureAction.OPEN_APP).
+     *
+     * Prefers the session's own [MediaController.getSessionActivity] — that's
+     * the PendingIntent Spotify itself nominated for "take me to what's
+     * playing", so it lands on the right screen and, being Spotify's own
+     * intent, isn't subject to our background-activity-launch restrictions.
+     * Falls back to a plain launcher intent when a session doesn't set one.
+     */
+    fun openApp() {
+        activeController?.sessionActivity?.let { pending ->
+            try {
+                pending.send()
+                return
+            } catch (e: PendingIntent.CanceledException) {
+                // Stale intent from a dead session — fall through to the launcher.
+            }
+        }
+        val launchIntent = context.packageManager.getLaunchIntentForPackage(SPOTIFY_PACKAGE)
+            ?.apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+            ?: return
+        context.startActivity(launchIntent)
     }
 
     private fun attachTo(controller: MediaController?) {
@@ -194,11 +225,13 @@ class SpotifyProvider(
                 priority = PRIORITY,
                 title = metadata.getString(MediaMetadata.METADATA_KEY_TITLE) ?: "",
                 subtitle = metadata.getString(MediaMetadata.METADATA_KEY_ARTIST),
+                contextLabel = metadata.getString(MediaMetadata.METADATA_KEY_ALBUM),
                 icon = art,
                 isPlaying = playbackState.state == PlaybackState.STATE_PLAYING,
                 onPlayPause = ::togglePlayPause,
                 onSkipPrevious = ::skipPrevious,
                 onSkipNext = ::skipNext,
+                onOpen = ::openApp,
                 accentColor = cachedAccentColor,
                 positionMs = playbackState.position,
                 durationMs = metadata.getLong(MediaMetadata.METADATA_KEY_DURATION),
@@ -227,6 +260,15 @@ class SpotifyProvider(
             Palette.from(it).generate().getDominantColor(DEFAULT_ACCENT_COLOR)
         } ?: DEFAULT_ACCENT_COLOR
         return downscaled
+    }
+
+    private fun loadAppLabel(): String? = try {
+        val pm = context.packageManager
+        pm.getApplicationLabel(pm.getApplicationInfo(SPOTIFY_PACKAGE, 0)).toString()
+    } catch (e: Exception) {
+        // Same package-visibility failure mode as loadAppIcon — the header
+        // just goes label-less rather than the provider failing.
+        null
     }
 
     private fun loadAppIcon(): Bitmap? {

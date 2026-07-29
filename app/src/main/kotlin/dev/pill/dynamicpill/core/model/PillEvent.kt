@@ -32,11 +32,23 @@ data class PillEvent(
     val priority: Int,
     val title: String,
     val subtitle: String? = null,
+    /**
+     * Secondary context shown in the expanded header, opposite the source app
+     * name — the album for media, and whatever the equivalent turns out to be
+     * for calls/messages. Null simply leaves that side of the header empty.
+     */
+    val contextLabel: String? = null,
     val icon: Bitmap? = null,
     val isPlaying: Boolean = true,
     val onPlayPause: (() -> Unit)? = null,
     val onSkipPrevious: (() -> Unit)? = null,
     val onSkipNext: (() -> Unit)? = null,
+    /**
+     * Hands off to whatever app produced this event (GestureAction.OPEN_APP).
+     * Same closure rationale as the transport callbacks above — the overlay
+     * opens the source app without ever knowing which app that is.
+     */
+    val onOpen: (() -> Unit)? = null,
     /** Dominant color extracted from [icon] (media art), for background tint. Null = no tint. */
     val accentColor: Int? = null,
     // Scrubber source data (rule 10) — the renderer extrapolates the live

@@ -189,8 +189,22 @@ Each phase has a **Verify** gate. Do not start the next phase until every Verify
 
 ### Phase 5 — Settings app
 - [ ] Compose Activity + DataStore
-- [ ] Per-event toggles, bounce-intensity slider, (later) message-app picker, Material You color
-- [ ] **✅ Verify:** toggling a provider off removes it live; bounce slider changes feel immediately; settings persist across restart.
+- [ ] Per-provider toggles, (later) message-app picker, Material You color
+- [ ] **Gesture binding editor** — UI over `core/gesture/GestureBindings`, which
+      already exists and already drives the pill; this phase only has to persist
+      and edit the table. Reference: `references/img5`–`img7`.
+- [ ] **Size & position tuner** — X/Y/width/height sliders with the
+      red-circle-under-the-cutout alignment helper, plus corner radius. Replaces
+      the by-hand dp-nudging loop. Reference: `references/img14`, `img19`.
+- [ ] **Appearance** — capsule background color, opacity, border width, scale,
+      alignment. Reference: `references/img16`–`img20`.
+- [ ] **Feel** — bounce-intensity + animation-duration sliders (§3's spring
+      tunables), reduce-animations toggle, haptics on expand/collapse/switch.
+- [ ] Battery-optimization exemption prompt (`references/img12`)
+- [ ] **✅ Verify:** toggling a provider off removes it live; rebinding a gesture
+      takes effect without a restart, and unbinding double-tap restores instant
+      single-tap response; the position tuner moves the pill live; bounce slider
+      changes feel immediately; everything persists across restart.
 
 ### Phase 6 — Polish
 - [ ] Idle-personality animations (screen-on only)

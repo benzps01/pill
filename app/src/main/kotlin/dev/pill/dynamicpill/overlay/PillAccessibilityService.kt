@@ -16,6 +16,9 @@ import dev.pill.dynamicpill.core.device.DeviceProfile
 import dev.pill.dynamicpill.core.device.Pixel8ProProfile
 import dev.pill.dynamicpill.core.event.Arbiter
 import dev.pill.dynamicpill.core.event.EventProvider
+import dev.pill.dynamicpill.core.gesture.Gesture
+import dev.pill.dynamicpill.core.gesture.GestureAction
+import dev.pill.dynamicpill.core.gesture.GestureBindings
 import dev.pill.dynamicpill.core.model.PillEvent
 import dev.pill.dynamicpill.core.state.PillState
 import dev.pill.dynamicpill.core.state.PillStateMachine
@@ -52,6 +55,9 @@ class PillAccessibilityService : AccessibilityService() {
     private var touchView: PillTouchView? = null
     private val deviceProfile: DeviceProfile = Pixel8ProProfile
     private val stateMachine = PillStateMachine(PillState.HIDDEN)
+    // Phase 5 will swap this for a DataStore-backed instance; the rest of the
+    // wiring below doesn't care where the table came from.
+    private val gestureBindings = GestureBindings()
     private var arbiter: Arbiter? = null
     private var spotifyProvider: SpotifyProvider? = null
     // The Arbiter's current winner. PillTouchView's control callbacks read
@@ -118,6 +124,7 @@ class PillAccessibilityService : AccessibilityService() {
 
         spotify.start()
         renderView?.setSourceIcon(spotify.appIcon)
+        renderView?.setSourceLabel(spotify.appLabel)
     }
 
     private fun onWinnerChanged(event: PillEvent?) {
@@ -181,20 +188,52 @@ class PillAccessibilityService : AccessibilityService() {
             expandedWidthPx,
             expandedHeightPx,
             windowTopPx,
-            onTap = { applyTransition(stateMachine.onTap()) },
-            onSwipeUp = { applyTransition(stateMachine.onSwipeUp()) },
+            onGesture = { gesture -> onGesture(gesture) },
             hasControls = { currentEvent?.onPlayPause != null },
             onPlayPause = { currentEvent?.onPlayPause?.invoke() },
             onSkipPrevious = { currentEvent?.onSkipPrevious?.invoke() },
-            onSkipNext = { currentEvent?.onSkipNext?.invoke() }
+            onSkipNext = { currentEvent?.onSkipNext?.invoke() },
+            isGestureBound = { gesture -> gestureBindings.isBound(stateMachine.state, gesture) }
         )
         windowManager.addView(touch, touchParams)
         touchView = touch
     }
 
+    /**
+     * The single place a raw gesture becomes behavior. Everything is looked
+     * up in [gestureBindings] rather than hardcoded, so Phase 5's settings UI
+     * can change what any gesture does without this method changing at all.
+     *
+     * Content actions are delegated to the winner [PillEvent]'s closures — a
+     * binding whose event doesn't supply one is simply a no-op, which is why
+     * "skip next while a call is on screen" does nothing instead of something
+     * surprising.
+     */
+    private fun onGesture(gesture: Gesture) {
+        when (gestureBindings.actionFor(stateMachine.state, gesture)) {
+            GestureAction.NONE -> Unit
+            GestureAction.EXPAND -> applyTransition(stateMachine.expand())
+            GestureAction.COLLAPSE -> applyTransition(stateMachine.collapse())
+            GestureAction.DISMISS -> applyTransition(stateMachine.dismiss())
+            GestureAction.PLAY_PAUSE -> currentEvent?.onPlayPause?.invoke()
+            GestureAction.SKIP_NEXT -> currentEvent?.onSkipNext?.invoke()
+            GestureAction.SKIP_PREVIOUS -> currentEvent?.onSkipPrevious?.invoke()
+            // Handing off to the app means the user is leaving the pill, so
+            // shrink back to Compact rather than leaving an expanded card
+            // waiting behind whatever they just opened.
+            GestureAction.OPEN_APP -> {
+                currentEvent?.onOpen?.invoke()
+                applyTransition(stateMachine.collapse())
+            }
+        }
+    }
+
     private fun applyTransition(state: PillState) {
         renderView?.applyState(state, animate = true)
-        touchView?.resizeWindow(expanded = state == PillState.EXPANDED || state == PillState.TRANSIENT_POP)
+        touchView?.resizeWindow(
+            expanded = state == PillState.EXPANDED || state == PillState.TRANSIENT_POP,
+            watchOutsideTouch = gestureBindings.isBound(state, Gesture.TAP_OUTSIDE)
+        )
     }
 
     /**

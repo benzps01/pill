@@ -54,3 +54,56 @@ starts being real duplicated wiring code.
 
 **Touches:** `overlay/PillAccessibilityService.kt` (`setUpEventEngine`,
 `spotifyProvider` field), eventually a new `app`-layer wiring class.
+
+---
+
+## 3. Reference-app features deliberately outside v1 — OPEN (by design)
+
+**What:** `references/` holds 22 screenshots of **Material Capsule (MT
+Capsule)**, a shipping app in this category, captured to mine for ideas.
+Its overlay layout (`img21`) and its user-assignable gestures (`img5`–`img7`)
+were both adopted. A large part of the rest was not, and this entry records
+which, so it doesn't get re-litigated every time someone opens the folder:
+
+- **Mini Capsule Events** (`img2`–`img4`): charging started/stopped, low
+  battery, wifi connected/disconnected, headphones connected/disconnected,
+  airplane mode on/off, volume mode, brightness mode, USB mounted/unmounted,
+  device unlock, third-party AirPods battery.
+- **Dynamic Cards** (`img5`): flashlight control, volume control,
+  timer/stopwatch, generic progress indication, charging indicator.
+- **Generic per-app notification cards** (`img8`) — arbitrary apps in the
+  capsule, with auto-hide delay and auto-remove-after-viewing.
+- **Show Dynamic Cards on lock screen** (`img11`).
+
+**Why deferred:** CLAUDE.md's scope discipline is explicit — v1 is exactly
+three providers (Calls, Messages, Spotify), and torch/quick actions and
+widgets are named as deferred in the build plan for a reason. Roughly 60% of
+what MT Capsule does falls outside that line. Building any of it now would
+mean Calls and Messages — the two providers v1 actually promises — slip
+further.
+
+**Revisit:** after v1 ships all three providers and Phase 6 polish lands.
+Not a backlog to start pulling from opportunistically.
+
+---
+
+## 4. Scrubber seek-by-drag — OPEN
+
+**What:** the scrubber card renders position but isn't draggable; you can't
+seek from the pill.
+
+**Why deferred:** build plan §2 does list "seek" among Spotify's
+interactions, but Phase 4's Verify gate doesn't ("controls actually drive
+playback; scrubber tracks without polling; art loads and is cached"), so it
+isn't gating the phase. It also wants real design thought — a drag on a
+44dp-tall card needs to not fight the swipe-up/swipe-down bindings that
+share the same window, which is a gesture-arbitration problem, not just a
+`transportControls.seekTo()` call.
+
+**Revisit:** once the gesture bindings have been lived with on-device and
+it's clear how a drag should coexist with the vertical swipe axis.
+
+**Touches:** `overlay/PillView.kt` (`drawScrubberCard` — needs to expose the
+track's hit rect), `overlay/PillTouchView.kt`, `core/model/PillEvent.kt`
+(an `onSeekTo: ((Long) -> Unit)?` closure, same pattern as the transport
+callbacks), `providers/spotify/SpotifyProvider.kt`.
