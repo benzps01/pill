@@ -80,6 +80,9 @@ lets the main card stay one row high.
   the title.
 - **Content row** below the header: `[album art + badge] [title / artist]
   [prev · play-pause · next]`.
+- Source identity (the badge icon and app name) comes off the winning
+  `PillEvent`, not from provider state latched at startup — so when Calls or
+  Messages wins the arbiter, the badge follows.
 - **Accent blob**: a solid tint of the album art's dominant color filling
   the card's lower portion, with a wavy top edge that scrolls sideways while
   playing and freezes when paused (`references/img21.jpeg`). Drawn first,

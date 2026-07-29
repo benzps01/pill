@@ -30,7 +30,7 @@ narrower, still-tracked exception.
 
 ---
 
-## 2. Concrete provider construction lives in `overlay`, not `app` — OPEN
+## 2. Concrete provider construction lives in `overlay`, not `app` — RESOLVED
 
 **What:** `PillAccessibilityService.setUpEventEngine()` directly does
 `SpotifyProvider(this, notificationListenerComponent)`, calls
@@ -48,12 +48,33 @@ provider list PillAccessibilityService reads from at `onServiceConnected`)
 — worth designing once there's a second provider to prove it against, not
 speculatively now.
 
-**Revisit:** when Calls or Messages (Phase 4 remainder) actually gets
-built — that's the point where this stops being a rule-7 technicality and
-starts being real duplicated wiring code.
+**Fixed early, before Calls/Messages.** A modularity audit found the
+violation was wider than recorded here — `overlay` also imported
+`data.NotificationAccess` and `data.PillNotificationListenerService`, which
+had gone unnoticed — and that the latched source icon was a latent bug, not
+just untidiness: `PillView.setSourceIcon` was called once at startup with
+Spotify's icon, so the first call or message to win the arbiter would have
+rendered under the Spotify logo. That made it cheaper to fix now than to
+wait for a second provider.
 
-**Touches:** `overlay/PillAccessibilityService.kt` (`setUpEventEngine`,
-`spotifyProvider` field), eventually a new `app`-layer wiring class.
+**Fix:**
+- `EventProvider` gained `start()`/`stop()`, which were the only reason
+  `overlay` needed the concrete `SpotifyProvider` type.
+- `PillEvent` gained `sourceIcon`/`sourceLabel`, so source identity travels
+  with the arbiter's winner instead of being latched once. `PillView` lost
+  its two setters.
+- New `core/event/ProviderRegistry`, implemented by a new `app`-layer
+  `PillApplication`. `PillAccessibilityService` reads
+  `(application as? ProviderRegistry)?.providers` — an Application is the
+  seam because the service is system-instantiated and can't be given
+  dependencies via a constructor. Notification Access checking and the
+  `ComponentName` moved into `app`.
+- `MainScreen` moved to a new `settings` package (it was already a pure
+  composable taking lambdas); `MainActivity` stays in `app` supplying the
+  concrete permission checks, since `settings` may only depend on `core`.
+
+`overlay` now imports `core` and nothing else. Verified by walking every
+cross-package import in `app/src/main/kotlin`.
 
 ---
 

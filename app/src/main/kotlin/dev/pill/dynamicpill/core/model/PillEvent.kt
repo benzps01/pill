@@ -39,6 +39,18 @@ data class PillEvent(
      */
     val contextLabel: String? = null,
     val icon: Bitmap? = null,
+    /**
+     * Which app this came from — icon and display name of the source (e.g.
+     * Spotify's launcher icon and "Spotify"), shown as the Compact indicator
+     * and the expanded card's badge/header.
+     *
+     * Deliberately carried per-event rather than handed to the renderer once
+     * at startup: the arbiter's winner changes between providers, so the
+     * badge has to change with it. Latching it once meant a call would have
+     * rendered under Spotify's logo.
+     */
+    val sourceIcon: Bitmap? = null,
+    val sourceLabel: String? = null,
     val isPlaying: Boolean = true,
     val onPlayPause: (() -> Unit)? = null,
     val onSkipPrevious: (() -> Unit)? = null,

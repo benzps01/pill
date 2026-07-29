@@ -12,4 +12,16 @@ interface EventProvider {
     val id: String
     val currentEvent: PillEvent?
     fun setListener(listener: () -> Unit)
+
+    /**
+     * Begin observing the underlying source. On the interface rather than
+     * each concrete provider so hosts can drive a `List<EventProvider>`
+     * without knowing what's in it (CLAUDE.md rule 7) — needing the concrete
+     * type just to call start/stop was what kept `overlay` importing
+     * `providers.spotify`.
+     */
+    fun start()
+
+    /** Release everything [start] acquired. Must be safe to call without a prior [start]. */
+    fun stop()
 }

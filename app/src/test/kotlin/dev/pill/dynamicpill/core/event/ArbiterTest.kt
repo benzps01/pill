@@ -10,8 +10,19 @@ private class FakeProvider(override val id: String) : EventProvider {
     override var currentEvent: PillEvent? = null
     private var listener: (() -> Unit)? = null
 
+    var started = false
+        private set
+
     override fun setListener(listener: () -> Unit) {
         this.listener = listener
+    }
+
+    override fun start() {
+        started = true
+    }
+
+    override fun stop() {
+        started = false
     }
 
     fun emit(event: PillEvent?) {

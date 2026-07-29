@@ -2,7 +2,6 @@ package dev.pill.dynamicpill.overlay
 
 import android.accessibilityservice.AccessibilityService
 import android.content.BroadcastReceiver
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -21,10 +20,8 @@ import dev.pill.dynamicpill.core.gesture.GestureAction
 import dev.pill.dynamicpill.core.gesture.GestureBindings
 import dev.pill.dynamicpill.core.model.PillEvent
 import dev.pill.dynamicpill.core.state.PillState
+import dev.pill.dynamicpill.core.event.ProviderRegistry
 import dev.pill.dynamicpill.core.state.PillStateMachine
-import dev.pill.dynamicpill.data.NotificationAccess
-import dev.pill.dynamicpill.data.PillNotificationListenerService
-import dev.pill.dynamicpill.providers.spotify.SpotifyProvider
 
 /**
  * Hosts the pill windows as an AccessibilityService rather than a plain
@@ -40,9 +37,9 @@ import dev.pill.dynamicpill.providers.spotify.SpotifyProvider
  * PillTouchView's callbacks) and the Arbiter's winner (real events) drive
  * the same state through one transition() path, so they can't disagree.
  *
- * Note: this class still directly constructs SpotifyProvider (a concrete
- * providers.spotify class) — a deliberate, tracked exception to CLAUDE.md
- * rule 7, not an oversight. See DEFERRED.md item 2.
+ * Depends on `core` alone: providers arrive as an opaque List<EventProvider>
+ * from the app layer's ProviderRegistry, so nothing here names a concrete
+ * provider or reaches into `data`.
  */
 class PillAccessibilityService : AccessibilityService() {
 
@@ -59,7 +56,7 @@ class PillAccessibilityService : AccessibilityService() {
     // wiring below doesn't care where the table came from.
     private val gestureBindings = GestureBindings()
     private var arbiter: Arbiter? = null
-    private var spotifyProvider: SpotifyProvider? = null
+    private var providers: List<EventProvider> = emptyList()
     // The Arbiter's current winner. PillTouchView's control callbacks read
     // action closures off this — not off `spotifyProvider` — so touch
     // handling stays provider-agnostic (see DEFERRED.md item 1).
@@ -95,7 +92,7 @@ class PillAccessibilityService : AccessibilityService() {
 
     override fun onUnbind(intent: Intent?): Boolean {
         unregisterReceiver(screenStateReceiver)
-        spotifyProvider?.stop()
+        providers.forEach { it.stop() }
         renderView?.let { windowManager.removeView(it) }
         touchView?.let { windowManager.removeView(it) }
         renderView = null
@@ -104,27 +101,20 @@ class PillAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Phase 3/4: only wires providers when Notification Access is actually
-     * granted (rule 11 — never assume, never fail silently; MainActivity's
-     * onboarding row is the visible half of this). No providers means the
-     * Arbiter always has nothing to say, which is a safe no-op, not a crash.
+     * Takes whatever providers the app layer composed — which ones exist, and
+     * whether prerequisites like Notification Access are satisfied, are
+     * decisions made there (rule 7). An empty list means the Arbiter has
+     * nothing to say, which is a safe no-op, not a crash.
      */
     private fun setUpEventEngine() {
-        if (!NotificationAccess.isGranted(this)) return
+        providers = (application as? ProviderRegistry)?.providers ?: emptyList()
+        if (providers.isEmpty()) return
 
-        val notificationListenerComponent =
-            ComponentName(this, PillNotificationListenerService::class.java)
-        val spotify = SpotifyProvider(this, notificationListenerComponent)
-        spotifyProvider = spotify
-
-        val providers: List<EventProvider> = listOf(spotify)
         val eventArbiter = Arbiter(providers)
         eventArbiter.setOnWinnerChanged { event -> onWinnerChanged(event) }
         arbiter = eventArbiter
 
-        spotify.start()
-        renderView?.setSourceIcon(spotify.appIcon)
-        renderView?.setSourceLabel(spotify.appLabel)
+        providers.forEach { it.start() }
     }
 
     private fun onWinnerChanged(event: PillEvent?) {

@@ -19,17 +19,35 @@ import dev.pill.dynamicpill.core.model.EventType
 import dev.pill.dynamicpill.core.model.PillEvent
 
 /**
- * True only for playback states that mean "there's something to show" —
- * playing or paused. Anything else (stopped, none, buffering-with-no-prior-
- * state, or no state at all) means the session isn't actually active,
- * regardless of whether Android still lists it. Pulled out as its own named
- * function, taking a plain Int rather than a MediaController/PlaybackState,
- * so it's independently unit-testable and the "is this session really
- * live?" rule has exactly one place it's defined instead of being an inline
- * expression buried in [SpotifyProvider.update].
+ * Whether a session means "there's something worth showing".
+ *
+ * [hasEverPlayed] is what separates the two cases that a raw state code
+ * can't tell apart, both observed on-device:
+ *
+ *  - **Resurrected sessions.** Clearing Spotify from recents destroys its
+ *    session, and then Spotify relaunches itself in the background and
+ *    registers a *fresh* session sitting in PAUSED a second or two later.
+ *    Treating that as live made the pill reappear on its own after the user
+ *    had explicitly swiped the app away. A session that has never played
+ *    isn't a pause the user made — it's an app restarting itself.
+ *  - **Transient blips.** Spotify passes through BUFFERING/CONNECTING on
+ *    every track change. Treating those as inactive dropped the event for
+ *    ~40ms, blinking the pill out and back — and slamming shut an open
+ *    expanded card. Once a session has played, ride those out instead.
+ *
+ * Pulled out as its own named function taking plain values rather than a
+ * MediaController/PlaybackState, so it's independently unit-testable and the
+ * "is this session really live?" rule has exactly one place it's defined
+ * instead of being an inline expression buried in [SpotifyProvider.update].
  */
-internal fun isSpotifyPlaybackActive(playbackStateCode: Int?): Boolean =
-    playbackStateCode == PlaybackState.STATE_PLAYING || playbackStateCode == PlaybackState.STATE_PAUSED
+internal fun isSpotifyPlaybackActive(playbackStateCode: Int?, hasEverPlayed: Boolean): Boolean =
+    when (playbackStateCode) {
+        PlaybackState.STATE_PLAYING -> true
+        PlaybackState.STATE_PAUSED,
+        PlaybackState.STATE_BUFFERING,
+        PlaybackState.STATE_CONNECTING -> hasEverPlayed
+        else -> false
+    }
 
 /**
  * Wraps the Spotify MediaSession, if one is active. Event-driven throughout
@@ -69,13 +87,11 @@ class SpotifyProvider(
     override var currentEvent: PillEvent? = null
         private set
 
-    /** Fetched once, never changes — the app icon shown in Compact/PS and the ES badge. */
-    var appIcon: Bitmap? = null
-        private set
-
-    /** Fetched once — the app's display name, shown in the ES header row. */
-    var appLabel: String? = null
-        private set
+    // Fetched once in start(), never change — travel out on every PillEvent
+    // as sourceIcon/sourceLabel rather than being read off this class, so the
+    // renderer stays provider-agnostic.
+    private var appIcon: Bitmap? = null
+    private var appLabel: String? = null
 
     private val density = context.resources.displayMetrics.density
     private val artSizePx = (64 * density).toInt()
@@ -94,6 +110,13 @@ class SpotifyProvider(
     private var expiryRunnable: Runnable? = null
     private var pausedExpired = false
 
+    /**
+     * Reset per session (see [attachTo]) — a *new* session that has never
+     * reached PLAYING is treated as a resurrection rather than a pause. See
+     * [isSpotifyPlaybackActive].
+     */
+    private var hasEverPlayed = false
+
     // Downscaled-art + accent-color cache, keyed by track identity — rule 9:
     // never hold the full-size bitmap Spotify hands us past the synchronous
     // downscale below, and never redo this work on every callback for the
@@ -104,7 +127,9 @@ class SpotifyProvider(
 
     private val controllerCallback = object : MediaController.Callback() {
         override fun onPlaybackStateChanged(state: PlaybackState?) = update()
+
         override fun onMetadataChanged(metadata: MediaMetadata?) = update()
+
         override fun onSessionDestroyed() {
             activeController = null
             update()
@@ -116,7 +141,7 @@ class SpotifyProvider(
             attachTo(controllers?.firstOrNull { it.packageName == SPOTIFY_PACKAGE })
         }
 
-    fun start() {
+    override fun start() {
         appIcon = loadAppIcon()
         appLabel = loadAppLabel()
         mediaSessionManager.addOnActiveSessionsChangedListener(
@@ -127,7 +152,7 @@ class SpotifyProvider(
         attachTo(initial.firstOrNull { it.packageName == SPOTIFY_PACKAGE })
     }
 
-    fun stop() {
+    override fun stop() {
         mediaSessionManager.removeOnActiveSessionsChangedListener(sessionsChangedListener)
         activeController?.unregisterCallback(controllerCallback)
         activeController = null
@@ -183,6 +208,9 @@ class SpotifyProvider(
         controller?.registerCallback(controllerCallback)
         cancelExpiry()
         pausedExpired = false
+        // A different session is a different playback; whatever the old one
+        // had done tells us nothing about this one.
+        hasEverPlayed = false
         update()
     }
 
@@ -207,15 +235,18 @@ class SpotifyProvider(
         val playbackState = controller?.playbackState
         val metadata = controller?.metadata
         val stateCode = playbackState?.state
+        if (stateCode == PlaybackState.STATE_PLAYING) hasEverPlayed = true
         when (stateCode) {
             PlaybackState.STATE_PLAYING -> {
                 cancelExpiry()
                 pausedExpired = false
             }
-            PlaybackState.STATE_PAUSED -> scheduleExpiry()
+            // Only a session that actually played can go stale from pausing —
+            // one that never played isn't showing in the first place.
+            PlaybackState.STATE_PAUSED -> if (hasEverPlayed) scheduleExpiry()
             else -> cancelExpiry()
         }
-        val isActive = isSpotifyPlaybackActive(stateCode) &&
+        val isActive = isSpotifyPlaybackActive(stateCode, hasEverPlayed) &&
             !(stateCode == PlaybackState.STATE_PAUSED && pausedExpired)
         currentEvent = if (controller != null && isActive && metadata != null && playbackState != null) {
             val art = artFor(metadata)
@@ -227,6 +258,8 @@ class SpotifyProvider(
                 subtitle = metadata.getString(MediaMetadata.METADATA_KEY_ARTIST),
                 contextLabel = metadata.getString(MediaMetadata.METADATA_KEY_ALBUM),
                 icon = art,
+                sourceIcon = appIcon,
+                sourceLabel = appLabel,
                 isPlaying = playbackState.state == PlaybackState.STATE_PLAYING,
                 onPlayPause = ::togglePlayPause,
                 onSkipPrevious = ::skipPrevious,

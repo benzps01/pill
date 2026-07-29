@@ -241,8 +241,6 @@ class PillView(context: Context) : View(context) {
     private var progress = 0f
     private var presence = 1f
     private var event: PillEvent? = null
-    private var sourceIcon: Bitmap? = null
-    private var sourceLabel: String? = null
 
     // Continuous, screen-on-only visual flourish (equalizer bars / marquee /
     // scrubber advance), not an event source — distinct from the rule-1
@@ -320,23 +318,11 @@ class PillView(context: Context) : View(context) {
         startAnimLoopIfNeeded()
     }
 
-    /** Source app icon shown in Compact/PS and as the ES badge (e.g. Spotify's icon) — set once, rarely changes. */
-    fun setSourceIcon(icon: Bitmap?) {
-        sourceIcon = icon
-        invalidate()
-    }
-
     /**
-     * Source app's display name for the ES header (e.g. "Spotify"). Like
-     * [setSourceIcon] this is per-provider and effectively constant, so it
-     * doesn't travel on the per-event [PillEvent].
+     * Real event content. Pass null to clear back to no-content (nothing
+     * drawn). Source identity (icon, app name) rides on the event itself, so
+     * the badge always matches whichever provider currently owns the pill.
      */
-    fun setSourceLabel(label: String?) {
-        sourceLabel = label
-        invalidate()
-    }
-
-    /** Real event content. Pass null to clear back to no-content (nothing drawn). */
     fun setContent(event: PillEvent?) {
         this.event = event
         invalidate()
@@ -438,7 +424,7 @@ class PillView(context: Context) : View(context) {
      * drawn in it would be obscured.
      */
     private fun drawCompactContent(canvas: Canvas, rect: RectF, e: PillEvent, alpha: Int, elapsedSeconds: Float) {
-        val icon = sourceIcon
+        val icon = e.sourceIcon
         if (icon != null) {
             bitmapPaint.alpha = alpha
             val iconSize = dp(18f)
@@ -490,7 +476,7 @@ class PillView(context: Context) : View(context) {
 
             // Provider badge rides the art's bottom-right corner, so the
             // source stays identifiable without spending a separate slot.
-            val badge = sourceIcon
+            val badge = e.sourceIcon
             if (badge != null) {
                 val badgeLeft = artLeft + artSizePx - badgeSizePx * 0.75f
                 val badgeTop = artTop + artSizePx - badgeSizePx * 0.75f
@@ -572,7 +558,7 @@ class PillView(context: Context) : View(context) {
         val centerX = rect.centerX()
 
         var leftCursor = rect.left + contentPaddingPx
-        val icon = sourceIcon
+        val icon = e.sourceIcon
         if (icon != null) {
             bitmapPaint.alpha = alpha
             val iconTop = baselineY - headerIconSizePx + dp(2f)
@@ -580,7 +566,7 @@ class PillView(context: Context) : View(context) {
             canvas.drawBitmap(icon, null, bitmapDst, bitmapPaint)
             leftCursor += headerIconSizePx + dp(6f)
         }
-        val label = sourceLabel
+        val label = e.sourceLabel
         if (label != null) {
             headerPaint.textAlign = Paint.Align.LEFT
             val room = centerX - cutoutHalfWidthPx - leftCursor
